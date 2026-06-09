@@ -58,6 +58,9 @@ if missing_env:
 
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
 
+# Global HTTP client to reuse TCP/TLS connections
+http_client = None
+
 
 # ==================== Formatting Helpers ====================
 
@@ -117,22 +120,32 @@ def main_menu():
 
 async def woo_get(path, params=None):
     """Fetch JSON from WooCommerce and normalize API/HTTP failures."""
+    global http_client
+    client_to_use = http_client
+    own_client = False
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{WOOCOMMERCE_URL}/wp-json/wc/v3/{path.lstrip('/')}",
-                params=params,
+        if client_to_use is None:
+            client_to_use = httpx.AsyncClient(
                 auth=(WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET),
-                timeout=10,
+                timeout=10.0
             )
-            response.raise_for_status()
-            return response.json()
+            own_client = True
+
+        response = await client_to_use.get(
+            f"{WOOCOMMERCE_URL}/wp-json/wc/v3/{path.lstrip('/')}",
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
     except httpx.HTTPStatusError as e:
         logger.error("WooCommerce API returned %s for %s", e.response.status_code, path)
         return {"error": f"WooCommerce API returned {e.response.status_code}"}
     except Exception as e:
         logger.error("Error fetching WooCommerce path %s: %s", path, str(e))
         return {"error": str(e)}
+    finally:
+        if own_client and client_to_use:
+            await client_to_use.aclose()
 
 
 async def get_all_products(limit=20):
@@ -192,6 +205,7 @@ async def get_order_by_id(order_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - main menu."""
+    context.user_data.clear()
     text, reply_markup = main_menu()
 
     if update.callback_query:
@@ -546,6 +560,13 @@ async def startup():
     """Initialize and start the Telegram application."""
     logger.info("Initializing Telegram application...")
     try:
+        # Initialize global HTTP client
+        global http_client
+        http_client = httpx.AsyncClient(
+            auth=(WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET),
+            timeout=10.0
+        )
+
         await application.initialize()
         await application.start()
         logger.info("Telegram application initialized and started.")
@@ -574,6 +595,11 @@ async def shutdown():
     if application.running:
         await application.stop()
     await application.shutdown()
+
+    # Close global HTTP client
+    global http_client
+    if http_client:
+        await http_client.aclose()
 
 
 @app.post("/telegram/webhook")
