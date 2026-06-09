@@ -1,0 +1,18 @@
+name: Sync to Hugging Face Hub
+on:
+  push:
+    branches: [main]   # Triggers on pushes to the 'main' branch
+  workflow_dispatch:   # Allows you to run this workflow manually from the Actions tab
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # Fetches the entire history to ensure a proper sync
+          lfs: true        # Necessary if you have large files tracked with Git LFS
+      - uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: Sajid-ul-Islam/deen-telegram-bot   # Replace with your details
+          hf_token: ${{ secrets.HF_TOKEN }}
