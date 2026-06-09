@@ -1,16 +1,26 @@
+import socket
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Force IPv4 resolution globally (resolves Hugging Face IPv6 DNS/routing issues)
+orig_getaddrinfo = socket.getaddrinfo
+def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if family == socket.AF_UNSPEC or family == 0:
+        family = socket.AF_INET
+    return orig_getaddrinfo(host, port, family, type, proto, flags)
+socket.getaddrinfo = patched_getaddrinfo
+
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import httpx
 import os
 from dotenv import load_dotenv
-import logging
 
 load_dotenv()
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -336,25 +346,27 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_t
 
 # ==================== FastAPI Routes ====================
 
-_application_initialized = False
+@app.on_event("startup")
+async def startup():
+    """Initialize the application on startup"""
+    logger.info("Initializing Telegram application...")
+    try:
+        await application.initialize()
+        logger.info("Telegram application initialized!")
+    except Exception as e:
+        logger.critical(f"Failed to initialize Telegram application on startup: {str(e)}")
+        raise e
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Clean up on shutdown"""
+    logger.info("Shutting down Telegram application...")
+    await application.stop()
 
 @app.post("/telegram/webhook")
 async def webhook(request: Request):
     """Telegram webhook"""
-    global _application_initialized
-    
     try:
-        # Initialize on first request
-        if not _application_initialized:
-            logger.info("Initializing Telegram application on first request...")
-            try:
-                await application.initialize()
-                _application_initialized = True
-                logger.info("Telegram application initialized!")
-            except Exception as e:
-                logger.error(f"Failed to initialize application: {str(e)}")
-                return {"ok": False, "error": "Initialization failed"}
-        
         data = await request.json()
         update = Update.de_json(data, application.bot)
         await application.process_update(update)
