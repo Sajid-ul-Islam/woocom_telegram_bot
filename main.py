@@ -28,16 +28,7 @@ if not all([TELEGRAM_BOT_TOKEN, WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SE
     logger.error(f"WOOCOMMERCE_KEY: {bool(WOOCOMMERCE_KEY)}")
     logger.error(f"WOOCOMMERCE_SECRET: {bool(WOOCOMMERCE_SECRET)}")
 
-from telegram.request import HTTPXRequest
-
-# Configure custom request client to force IPv4 and increase timeouts (resolves Hugging Face IPv6 routing issues)
-request_client = HTTPXRequest(
-    connect_timeout=30.0,
-    read_timeout=30.0,
-    httpx_kwargs={"transport": httpx.AsyncHTTPTransport(local_address="0.0.0.0")}
-)
-
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request_client).build()
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # ==================== WooCommerce API Helpers ====================
 
@@ -345,23 +336,25 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_t
 
 # ==================== FastAPI Routes ====================
 
-@app.on_event("startup")
-async def startup():
-    """Initialize the application on startup"""
-    logger.info("Initializing Telegram application...")
-    await application.initialize()
-    logger.info("Telegram application initialized!")
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Clean up on shutdown"""
-    logger.info("Shutting down Telegram application...")
-    await application.stop()
+_application_initialized = False
 
 @app.post("/telegram/webhook")
 async def webhook(request: Request):
     """Telegram webhook"""
+    global _application_initialized
+    
     try:
+        # Initialize on first request
+        if not _application_initialized:
+            logger.info("Initializing Telegram application on first request...")
+            try:
+                await application.initialize()
+                _application_initialized = True
+                logger.info("Telegram application initialized!")
+            except Exception as e:
+                logger.error(f"Failed to initialize application: {str(e)}")
+                return {"ok": False, "error": "Initialization failed"}
+        
         data = await request.json()
         update = Update.de_json(data, application.bot)
         await application.process_update(update)
