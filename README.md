@@ -75,42 +75,19 @@ INFO:     Started server process
 INFO:     Uvicorn running on http://0.0.0.0:8000
 ```
 
-### Step 6: Deploy to Production
+### Step 6: Deploy to Production (Render)
 
-#### Option A: Railway (Recommended)
-1. Push to GitHub
-2. Go to [railway.app](https://railway.app)
-3. Connect GitHub repo
-4. Add environment variables in Railway dashboard
-5. Deploy automatically
-
-#### Option B: Render
 1. Go to [render.com](https://render.com)
-2. Create new Web Service
-3. Connect GitHub
-4. Set build command: `pip install -r requirements.txt`
-5. Set start command: `uvicorn main:app --host 0.0.0.0`
-6. Add environment variables
-
-#### Option C: Your Own Server (VPS/Droplet)
-```bash
-# SSH into your server
-ssh user@your_server_ip
-
-# Clone repo
-git clone your_repo_url
-cd deen_telegram_bot
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Run with PM2 or systemd
-pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name deen-bot
-```
+2. Create a new **Web Service**
+3. Connect your GitHub repository
+4. Set build command: `pip install -r requirements.txt` (or select Docker to use the provided Dockerfile)
+5. Set start command: `uvicorn main:app --host 0.0.0.0 --port 8000`
+6. Add the 5 required environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `WOOCOMMERCE_URL`, `WOOCOMMERCE_KEY`, `WOOCOMMERCE_SECRET`)
+7. Click **Deploy Web Service**
 
 ### Step 7: Set Telegram Webhook
 
-After deployment, replace `YOUR_DOMAIN` with your actual domain:
+After deployment, replace `YOUR_DOMAIN` with your actual Render URL (e.g., `your-app.onrender.com`):
 
 ```bash
 curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
@@ -121,7 +98,7 @@ curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
 Example:
 ```bash
 curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/setWebhook" \
-  -d "url=https://deen-bot.railway.app/telegram/webhook" \
+  -d "url=https://deen-telegram-bot.onrender.com/telegram/webhook" \
   -d "secret_token=change_this_to_a_long_random_string"
 ```
 
@@ -129,7 +106,7 @@ curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/s
 
 ## Testing
 
-1. Find your bot on Telegram (search for username you set with BotFather)
+1. Find your bot on Telegram (search for the username you set with @BotFather).
 2. Start the bot: `/start`
 3. Test features:
    - Click "Categories"

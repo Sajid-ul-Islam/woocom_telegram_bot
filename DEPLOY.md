@@ -1,8 +1,11 @@
-# Quick Deployment Guides
+# Quick Deployment Guide
 
-## Railway.app (Easiest)
+This guide describes how to deploy the Telegram bot on **Render.com** and how to run it locally.
+
+## Render.com Deployment
 
 ### 1. Create GitHub Repo
+Initialize a Git repository and push your code to GitHub:
 ```bash
 git init
 git add .
@@ -10,63 +13,41 @@ git commit -m "Initial commit"
 git push origin main
 ```
 
-### 2. Deploy on Railway
-1. Go to [railway.app](https://railway.app)
-2. Click "New Project"
-3. Select "Deploy from GitHub repo"
-4. Connect your GitHub account
-5. Select your `deen_telegram_bot` repo
-6. Click "Deploy"
-
-### 3. Add Environment Variables
-1. In Railway dashboard, go to your project
-2. Click "Variables"
-3. Add these variables:
-   - `TELEGRAM_BOT_TOKEN` = your bot token
-   - `WOOCOMMERCE_URL` = your site URL
-   - `WOOCOMMERCE_KEY` = your API key
-   - `WOOCOMMERCE_SECRET` = your API secret
-
-### 4. Get Your Domain
-1. Go to "Settings"
-2. Copy your Railway domain (e.g., `https://deen-bot-prod.railway.app`)
-
-### 5. Set Telegram Webhook
-```bash
-curl -X POST "https://api.telegram.org/botYOUR_TOKEN/setWebhook?url=https://YOUR_RAILWAY_DOMAIN/telegram/webhook"
-```
-
----
-
-## Render.com
-
-### 1. Push to GitHub (same as above)
-
 ### 2. Deploy on Render
-1. Go to [render.com](https://render.com)
-2. Click "New +"
-3. Select "Web Service"
-4. Connect GitHub
-5. Select your repo
-6. Fill in:
+1. Go to [render.com](https://render.com) and log in.
+2. Click **New +** and select **Web Service**.
+3. Connect your GitHub account and select your `deen_telegram_bot` repository.
+4. Configure the Web Service:
    - **Name**: `deen-telegram-bot`
-   - **Region**: Singapore or Singapore (closest to Bangladesh)
+   - **Region**: Choose a region closest to your WooCommerce server or users (e.g., `Singapore`).
    - **Branch**: `main`
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port 8000`
+   - **Runtime**: `Python` (or `Docker` to use the provided Dockerfile).
+     - *If using Python:*
+       - **Build Command**: `pip install -r requirements.txt`
+       - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port 8000`
+     - *If using Docker:*
+       - Render will automatically build the image using the [Dockerfile](file:///g:/deen_telegram_bot/Dockerfile).
+   - **Instance Type**: `Free` (or custom tier).
 
 ### 3. Add Environment Variables
-1. Scroll down to "Environment"
-2. Add all 4 variables (same as Railway)
+Scroll down to the **Environment** section, click **Add Environment Variable**, and configure these required keys:
+* `TELEGRAM_BOT_TOKEN`: Your bot token from @BotFather
+* `TELEGRAM_WEBHOOK_SECRET`: A secure random secret used to authenticate webhook updates (sent via `X-Telegram-Bot-Api-Secret-Token`)
+* `WOOCOMMERCE_URL`: Your WooCommerce site URL (e.g., `https://example.com`)
+* `WOOCOMMERCE_KEY`: WooCommerce Consumer Key (`ck_...`)
+* `WOOCOMMERCE_SECRET`: WooCommerce Consumer Secret (`cs_...`)
 
-### 4. Create & Deploy
-- Click "Create Web Service"
-- Wait for deployment to complete
-- Copy your domain from the Render dashboard
+### 4. Create Web Service
+Click **Create Web Service** at the bottom of the page and wait for the deployment to complete.
 
 ### 5. Set Telegram Webhook
+After the build succeeds and the service starts, copy your Render app URL (e.g., `https://deen-telegram-bot.onrender.com`).
+Register the webhook with Telegram by sending a POST request (replace placeholders with actual values):
+
 ```bash
-curl -X POST "https://api.telegram.org/botYOUR_TOKEN/setWebhook?url=https://YOUR_RENDER_DOMAIN/telegram/webhook"
+curl -X POST "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/setWebhook" \
+  -d "url=https://YOUR_RENDER_DOMAIN.onrender.com/telegram/webhook" \
+  -d "secret_token=YOUR_TELEGRAM_WEBHOOK_SECRET"
 ```
 
 ---
@@ -75,37 +56,47 @@ curl -X POST "https://api.telegram.org/botYOUR_TOKEN/setWebhook?url=https://YOUR
 
 ### Run Locally
 ```bash
+# Create a virtual environment
+python -m venv .venv
+
+# Activate the virtual environment
+# On Windows PowerShell:
+.venv\Scripts\Activate.ps1
+# On Windows CMD:
+.venv\Scripts\activate.bat
+# On macOS/Linux:
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy and edit .env
+# Copy and edit environment variables
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env and fill in your credentials
 
-# Run the bot
+# Run the bot server
 python main.py
 ```
 
 Server will run at `http://localhost:8000`
 
-**Note:** For local testing without webhook:
-- Use `python-telegram-bot` polling instead of webhook
-- Or use a tunneling tool like ngrok
+**Note:** For local testing without a public webhook, you can use a tunneling tool like **ngrok** to forward traffic to `http://localhost:8000/telegram/webhook`.
 
 ---
 
 ## Verify Bot is Working
 
-After setting webhook, test with:
+After setting the webhook, test it by checking the webhook status:
 ```bash
-# Check webhook status
-curl "https://api.telegram.org/botYOUR_TOKEN/getWebhookInfo"
+curl "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/getWebhookInfo"
+```
 
-# Should return:
+Expected response format:
+```json
 {
   "ok": true,
   "result": {
-    "url": "https://your-domain/telegram/webhook",
+    "url": "https://YOUR_RENDER_DOMAIN.onrender.com/telegram/webhook",
     "has_custom_certificate": false,
     "pending_update_count": 0,
     "ip_address": "..."
@@ -118,41 +109,39 @@ curl "https://api.telegram.org/botYOUR_TOKEN/getWebhookInfo"
 ## Troubleshooting Deployment
 
 ### Bot not responding
-1. Check webhook is set correctly
-2. Check server logs for errors
-3. Verify all environment variables are set
+1. Verify the webhook URL is registered correctly.
+2. Check your Render logs for application start errors.
+3. Confirm that all environment variables are correctly configured in the Render dashboard.
 
 ### 502 Bad Gateway
-- Server might be starting, wait 30 seconds
-- Check logs for Python errors
-- Verify all environment variables are present
+- The server might still be booting up. Wait 30 seconds and try again.
+- Check Render logs for python startup errors.
+- Ensure the start command uses host `0.0.0.0` and port `8000` (which matches Render's port exposure).
 
-### "Connection refused"
-- Bot server might be down
-- Check Railway/Render dashboard
-- Redeploy if necessary
+### Connection refused
+- The bot server might be offline or failing health checks. Check the Render dashboard for service status.
 
 ---
 
 ## Update Bot Code
 
-After making changes:
+When you make changes to the code:
 ```bash
 git add .
 git commit -m "Update bot features"
 git push origin main
 ```
-
-Railway/Render will auto-redeploy within seconds.
+Render will automatically detect the push and redeploy your service.
 
 ---
 
 ## Environment Variables Checklist
 
-Before deploying, verify you have:
-- ✅ `TELEGRAM_BOT_TOKEN` (from @BotFather)
-- ✅ `WOOCOMMERCE_URL` (your store URL)
-- ✅ `WOOCOMMERCE_KEY` (REST API key)
-- ✅ `WOOCOMMERCE_SECRET` (REST API secret)
+Ensure the following 5 variables are defined in the Render dashboard:
+- [ ] `TELEGRAM_BOT_TOKEN` (from @BotFather)
+- [ ] `TELEGRAM_WEBHOOK_SECRET` (custom webhook authorization secret)
+- [ ] `WOOCOMMERCE_URL` (your store's URL)
+- [ ] `WOOCOMMERCE_KEY` (WooCommerce API Consumer Key)
+- [ ] `WOOCOMMERCE_SECRET` (WooCommerce API Consumer Secret)
 
-All 4 are REQUIRED for the bot to work.
+All **5** variables are required for the bot to run.
