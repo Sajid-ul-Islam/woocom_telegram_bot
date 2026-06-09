@@ -2,6 +2,7 @@ import json
 import os
 import re
 import html
+import time
 import httpx
 import logging
 from anthropic import AsyncAnthropic
@@ -17,6 +18,71 @@ logger = logging.getLogger(__name__)
 WOOCOMMERCE_URL = os.getenv("WOOCOMMERCE_URL", "").rstrip("/")
 WOOCOMMERCE_KEY = os.getenv("WOOCOMMERCE_KEY")
 WOOCOMMERCE_SECRET = os.getenv("WOOCOMMERCE_SECRET")
+
+class SimpleCache:
+    def __init__(self, ttl_seconds=3600):
+        self.ttl = ttl_seconds
+        self.store = {}
+
+    def get(self, key):
+        if key in self.store:
+            data, timestamp = self.store[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.store[key]
+        return None
+
+    def set(self, key, value):
+        self.store[key] = (value, time.time())
+
+    def clear(self):
+        self.store.clear()
+
+
+products_cache = SimpleCache(ttl_seconds=1800)    # 30 minutes
+
+
+SYNONYMS_MAP = {
+    # Bangla terms
+    "জামা": "shirt",
+    "শার্ট": "shirt",
+    "প্যান্ট": "pants",
+    "পাঞ্জাবি": "panjabi",
+    "মানিব্যাগ": "wallet",
+    "গেঞ্জি": "t-shirt",
+
+    # Banglish terms
+    "jama": "shirt",
+    "shart": "shirt",
+    "shurt": "shirt",
+    "pant": "pants",
+    "pants": "pants",
+    "tshirt": "t-shirt",
+    "t-shirt": "t-shirt",
+    "teeshirt": "t-shirt",
+    "genji": "t-shirt",
+    "panjabi": "panjabi",
+    "punjabi": "panjabi",
+    "wallet": "wallet",
+    "moneybag": "wallet",
+    "bag": "wallet",
+    "polo": "polo",
+    "half sleeve": "half sleeve",
+    "halfshirt": "half sleeve",
+}
+
+
+def preprocess_search_query(query):
+    if not query:
+        return ""
+    q_clean = query.strip().lower()
+    if q_clean in SYNONYMS_MAP:
+        return SYNONYMS_MAP[q_clean]
+    words = q_clean.split()
+    mapped_words = [SYNONYMS_MAP.get(w, w) for w in words]
+    return " ".join(mapped_words)
+
 
 SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DeenCommerce,
 a Bangladeshi e-commerce store selling clothing and fashion items on deencommerce.com.
@@ -228,6 +294,8 @@ class RAGAgent:
 
     async def search_products(self, query: str, limit: int = 5):
         """Search products by keyword"""
+        processed_query = preprocess_search_query(query)
+        logger.info("RAG search. Original: %s -> Processed: %s", query, processed_query)
         async with httpx.AsyncClient(
             auth=(self.woo_key, self.woo_secret),
             timeout=10
@@ -235,7 +303,7 @@ class RAGAgent:
             response = await client.get(
                 f"{self.woo_url}/wp-json/wc/v3/products",
                 params={
-                    "search": query,
+                    "search": processed_query,
                     "per_page": limit,
                     "status": "publish",
                     "stock_status": "instock"
@@ -258,15 +326,20 @@ class RAGAgent:
             ]
 
     async def get_product_details(self, product_id: int):
-        """Get detailed product information"""
-        async with httpx.AsyncClient(
-            auth=(self.woo_key, self.woo_secret),
-            timeout=10
-        ) as client:
-            response = await client.get(
-                f"{self.woo_url}/wp-json/wc/v3/products/{product_id}"
-            )
-            p = response.json()
+        """Get detailed product information (with caching)"""
+        cache_key = f"product_{product_id}"
+        p = products_cache.get(cache_key)
+        if p is None:
+            async with httpx.AsyncClient(
+                auth=(self.woo_key, self.woo_secret),
+                timeout=10
+            ) as client:
+                response = await client.get(
+                    f"{self.woo_url}/wp-json/wc/v3/products/{product_id}"
+                )
+                p = response.json()
+                if isinstance(p, dict) and "error" not in p:
+                    products_cache.set(cache_key, p)
 
             size_chart = extract_and_format_size_chart(p)
             return {

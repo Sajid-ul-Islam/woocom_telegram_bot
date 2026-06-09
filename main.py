@@ -152,80 +152,6 @@ def strip_html(value):
     return re.sub(r"<[^>]+>", "", text).strip()
 
 
-def html_table_to_markdown(table_html):
-    rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE)
-    md_rows = []
-
-    for row in rows:
-        cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.DOTALL | re.IGNORECASE)
-        clean_cells = []
-        for cell in cells:
-            c = re.sub(r'<[^>]+>', '', cell)
-            c = html.unescape(c)
-            c = c.replace('\xa0', ' ').replace('\u200b', '')
-            c = c.strip()
-            clean_cells.append(c)
-        if clean_cells:
-            md_rows.append(clean_cells)
-
-    if not md_rows:
-        return ""
-
-    header_title = ""
-    start_idx = 0
-    if len(md_rows[0]) == 1 and len(md_rows) > 1:
-        header_title = f"📏 *{md_rows[0][0]}*"
-        start_idx = 1
-    elif len(md_rows[0]) == 1:
-        return f"📏 *{md_rows[0][0]}*"
-
-    table_lines = []
-    rows_to_format = md_rows[start_idx:]
-    if not rows_to_format:
-        return header_title
-
-    col_widths = {}
-    for r in rows_to_format:
-        for col_idx, cell in enumerate(r):
-            col_widths[col_idx] = max(col_widths.get(col_idx, 0), len(cell))
-
-    for idx, r in enumerate(rows_to_format):
-        row_str = " | ".join(f"{cell:<{col_widths.get(col_idx, len(cell))}}" for col_idx, cell in enumerate(r))
-        table_lines.append(row_str)
-        if idx == 0:
-            separator = "-+-".join("-" * col_widths.get(col_idx, len(cell)) for col_idx in range(len(r)))
-            table_lines.append(separator)
-
-    table_text = "\n".join(table_lines)
-
-    res = ""
-    if header_title:
-        res += header_title + "\n"
-    res += f"```\n{table_text}\n```"
-    return res
-
-
-def extract_and_format_size_chart(product):
-    if not isinstance(product, dict):
-        return None
-    for field in ["short_description", "description"]:
-        html_content = product.get(field, "")
-        if not html_content:
-            continue
-        tables = re.findall(r'<table[^>]*>.*?</table>', html_content, re.DOTALL | re.IGNORECASE)
-        for table in tables:
-            if any(x in table.lower() for x in ["size", "chart", "guide", "dimension", "measure"]):
-                return html_table_to_markdown(table)
-    return None
-
-
-def strip_html_excluding_table(html_content):
-    if not html_content:
-        return ""
-    cleaned = re.sub(r'<table[^>]*>.*?</table>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-    return strip_html(cleaned)
-
-
 def product_button_name(name):
     clean_name = str(name or "Product").strip()
     return clean_name[:32] if clean_name else "Product"
@@ -259,7 +185,7 @@ def main_menu(first_name=None):
         [InlineKeyboardButton("🆕 Latest Products", callback_data="products_all_1")],
         [InlineKeyboardButton("🔍 Search", callback_data="search")],
         [InlineKeyboardButton("📦 My Order", callback_data="my_order")],
-        [InlineKeyboardButton("🤖 Ask AI Agent", callback_data="ask_ai")],
+        [InlineKeyboardButton("🤖 Ask DEEN AI Agent", callback_data="ask_ai")],
     ]
     greeting = f"Assalamu Alaikum {md(first_name)}" if first_name else "Assalamu Alaikum"
     text = (
@@ -385,10 +311,7 @@ async def get_order_by_id(order_id):
 # ==================== Conversational AI RAG Agent ====================
 
 SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DeenCommerce,
-a Bangladeshi e-commerce store selling clothing and fashion items on deencommerce.com.
-
-You must ALWAYS talk and respond ONLY in the context of deencommerce.com and its products, categories, orders, policies, and services.
-If the customer asks or talks about anything unrelated to deencommerce.com (such as general knowledge, other websites, coding, general questions, or non-DeenCommerce items/topics), you must politely decline to answer, inform them that you are the DeenCommerce shopping assistant, and redirect them back to deencommerce.com products, clothing items, or order inquiries.
+a Bangladeshi e-commerce store selling clothing and fashion items.
 
 You have access to tools to:
 1. Search products by keyword or category
@@ -399,26 +322,8 @@ Your goals:
 - Help customers find exactly what they're looking for
 - Answer questions about products, prices, and availability
 - Make personalized recommendations based on their needs
-- Be conversational and friendly
+- Be conversational and friendly (in English or Bengali)
 - Handle queries intelligently by using tools when needed
-
-Language & Response Style:
-- Understand and reply in the user's preferred language, including English, Bangla (Bengali), and Banglish (Bengali written in Latin script).
-- Keep responses extremely to-the-point, concise, and direct without unnecessary fluff.
-- Be concise in Telegram (max 1000 characters per message).
-- Use emojis to make responses engaging.
-- Always mention prices in ৳ (Taka).
-
-Telegram Bot Context:
-You operate inside a Telegram bot. The user can also use the following slash commands:
-- /start : Go to the Main Menu and welcome greeting.
-- /browse : Browse clothing categories.
-- /search : Search for products.
-- /my_order : Check order status (requires order ID + email/phone).
-- /ask : Ask the AI assistant questions (e.g., "/ask blue shirts").
-If a user wants to perform these actions, you can mention or guide them to use these slash commands.
-
-When a customer asks for a size chart or size guide of a product, retrieve the product details and output its size_chart string exactly as provided (with the monospace code block formatting).
 
 When recommending or listing products, always include their website link (permalink) so the customer can easily view/buy them on the website.
 
@@ -427,6 +332,10 @@ When a customer asks a question:
 2. Decide which tools to use
 3. Retrieve relevant information from our database
 4. Provide a helpful, conversational response
+
+Be concise in Telegram (max 1000 characters per message).
+Use emojis to make responses engaging.
+Always mention prices in ৳ (Taka).
 """
 
 
@@ -571,14 +480,11 @@ class RAGAgent:
             )
             p = response.json()
 
-            size_chart = extract_and_format_size_chart(p)
             return {
                 "id": p["id"],
                 "name": p["name"],
                 "price": p["price"],
                 "description": p.get("description", ""),
-                "short_description": p.get("short_description", ""),
-                "size_chart": size_chart if size_chart else "No size chart available.",
                 "stock": p.get("stock_quantity", "N/A"),
                 "categories": [c.get("name") for c in p.get("categories", [])],
                 "images": [img["src"] for img in p.get("images", [])],
@@ -1308,17 +1214,12 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"💰 Price: ৳{md(product.get('price', ''))}\n"
         text += f"{stock_display(product)}\n\n"
 
-        description_field = product.get("description") or product.get("short_description") or ""
-        desc_clean = strip_html_excluding_table(description_field)
+        desc_clean = strip_html(product.get("description", "No description"))
         if desc_clean:
             text += f"📝 {md(desc_clean[:300])}"
             if len(desc_clean) > 300:
                 text += "..."
             text += "\n\n"
-
-        size_chart = extract_and_format_size_chart(product)
-        if size_chart:
-            text += f"{size_chart}\n\n"
 
         keyboard = []
         permalink = product.get("permalink") if isinstance(product, dict) else None
@@ -1557,8 +1458,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🤖 *DEEN Commerce Customer Care*\n\n"
         "Welcome! How can we assist you today? Please choose a topic below:\n\n"
-        "💳 *Payment*: bKash, Nagad, or Cash on Delivery.\n"
-        "🚚 *Shipping*: Dhaka: 24-48h (৳80), Outside Dhaka: 3-5 days (৳150).\n"
+        "💳 *Payment*: bKash, Bank, or Cash on Delivery.\n"
+        "🚚 *Shipping*: Dhaka: 24-48h (৳50), Outside Dhaka: 3-5 days (৳90).\n"
         "🔄 *Exchange*: Exchange within 7 days for sizing issues.\n"
         "📞 *Live Agent*: Direct support contact info."
     )
@@ -1609,8 +1510,8 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif faq_type == "faq_shipping":
         text = (
             "🚚 *Delivery Details*\n\n"
-            "• *Inside Dhaka*: 24 to 48 Hours. Delivery Fee: *৳80*.\n"
-            "• *Outside Dhaka*: 3 to 5 Days (via Pathao / Steadfast). Delivery Fee: *৳150*.\n\n"
+            "• *Inside Dhaka*: 24 to 48 Hours. Delivery Fee: *৳50*.\n"
+            "• *Outside Dhaka*: 3 to 5 Days (via Pathao). Delivery Fee: *৳90*.\n\n"
             "📦 You will receive a tracking link via SMS once your parcel is dispatched."
         )
     elif faq_type == "faq_returns":
@@ -1625,7 +1526,7 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📞 *Contact DEEN Commerce Support*\n\n"
             "Need to talk to a human agent? We are here to help!\n\n"
             "💬 *Messenger*: [Click here to message us](https://m.me/deencommerce)\n"
-            "🟢 *WhatsApp*: `+8801700000000` (Mock/Placeholder number)\n"
+            "🟢 *WhatsApp*: `+8801752700500`\n"
             "📞 *Hotline*: `+8809612345678` (10:00 AM - 8:00 PM)\n"
             "✉️ *Email*: `support@deencommerce.com`"
         )
