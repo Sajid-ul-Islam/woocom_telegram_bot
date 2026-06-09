@@ -1,0 +1,19 @@
+# Git
+.git
+.github
+
+# Sensitive Information
+.env
+
+# Virtual Environments
+.venv
+venv/
+env/
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Documentation (optional, removes unnecessary files from the final image)
+*.md
