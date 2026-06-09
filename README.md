@@ -50,6 +50,7 @@ A simple Telegram bot for your WooCommerce store that allows customers to:
 2. Edit `.env` and add your credentials:
    ```
    TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
+   TELEGRAM_WEBHOOK_SECRET=change_this_to_a_long_random_string
    WOOCOMMERCE_URL=https://deencommerce.com
    WOOCOMMERCE_KEY=your_consumer_key
    WOOCOMMERCE_SECRET=your_consumer_secret
@@ -111,12 +112,16 @@ pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name deen-bot
 After deployment, replace `YOUR_DOMAIN` with your actual domain:
 
 ```bash
-curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook?url=https://YOUR_DOMAIN.com/telegram/webhook"
+curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
+  -d "url=https://YOUR_DOMAIN.com/telegram/webhook" \
+  -d "secret_token={TELEGRAM_WEBHOOK_SECRET}"
 ```
 
 Example:
 ```bash
-curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/setWebhook?url=https://deen-bot.railway.app/telegram/webhook"
+curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/setWebhook" \
+  -d "url=https://deen-bot.railway.app/telegram/webhook" \
+  -d "secret_token=change_this_to_a_long_random_string"
 ```
 
 ---
@@ -128,7 +133,7 @@ curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/s
 3. Test features:
    - Click "Browse Products"
    - Click "Search" and type a product name
-   - Click "My Orders" and enter your email
+   - Click "My Order" and enter your order number plus billing email
 
 ---
 
@@ -145,9 +150,9 @@ curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/s
 - Enter any product name
 - Results show price and stock
 
-### 📦 My Orders
-- Enter your customer email (from WooCommerce account)
-- Shows all your orders
+### 📦 My Order
+- Enter your order number and billing email
+- Shows only that matching order
 - Displays order status (Pending, Processing, Completed, etc.)
 - Shows items and total price
 
@@ -165,10 +170,9 @@ curl -X POST "https://api.telegram.org/bot123456789:ABCDEFGHijklmnopqrstuvwxyz/s
 - Check WooCommerce REST API is enabled
 - Ensure products are published
 
-### "No orders found"
-- Customer must enter exact email from WooCommerce account
-- Email must be lowercase
-- Customer must have at least one order
+### "No matching order found"
+- Customer must enter the exact order number and billing email
+- Email must match the billing email on the WooCommerce order
 
 ### WooCommerce API errors
 1. Go to WooCommerce → Settings → Advanced
@@ -222,6 +226,7 @@ For issues or questions:
   *.pyc
   ```
 - Keep your bot token and WooCommerce keys secret
+- Keep `TELEGRAM_WEBHOOK_SECRET` secret and set it when registering the Telegram webhook
 - Consider using read-only API keys for bot
 
 ---
