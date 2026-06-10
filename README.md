@@ -35,7 +35,7 @@ A simple Telegram bot for your WooCommerce store that allows customers to:
 
 ### Step 2: Get WooCommerce API Keys
 
-1. Go to your WordPress Admin: `https://deencommerce.com/wp-admin`
+1. Go to your WordPress Admin: `https://YourSiteName.com/wp-admin`
 2. Navigate to: **WooCommerce** → **Settings** → **Advanced** → **REST API**
 3. Click **Create an API key**
 4. Set Permissions to **Read** (minimum)
@@ -52,7 +52,7 @@ A simple Telegram bot for your WooCommerce store that allows customers to:
    ```
    TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
    TELEGRAM_WEBHOOK_SECRET=change_this_to_a_long_random_string
-   WOOCOMMERCE_URL=https://deencommerce.com
+   WOOCOMMERCE_URL=https://YourSiteName.com
    WOOCOMMERCE_KEY=your_consumer_key
    WOOCOMMERCE_SECRET=your_consumer_secret
    ```
@@ -185,7 +185,7 @@ Add later (step by step):
 For issues or questions:
 1. Check Telegram logs: `/telegram/webhook` responses
 2. Verify WooCommerce REST API is working
-3. Test API manually: `curl https://deencommerce.com/wp-json/wc/v3/products`
+3. Test API manually: `curl https://YourSiteName.com/wp-json/wc/v3/products`
 
 ---
 
@@ -206,4 +206,4 @@ For issues or questions:
 ---
 
 **Bot Version:** 1.0  
-**Last Updated:** 2024
+**Last Updated:** 2026
