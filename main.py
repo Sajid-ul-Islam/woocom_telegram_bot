@@ -285,6 +285,11 @@ async def get_product_by_id(product_id):
     return await woo_get(f"products/{product_id}")
 
 
+async def get_category_by_id(category_id):
+    """Fetch a single category."""
+    return await woo_get(f"products/categories/{category_id}")
+
+
 async def search_products(keyword):
     """Search products by keyword."""
     return await woo_get(
@@ -319,6 +324,8 @@ Your goals:
 - Make personalized recommendations based on their needs
 - Be conversational and friendly (in English or Bengali)
 - Handle queries intelligently by using tools when needed
+
+When recommending or listing products, always include their website link (permalink) so the customer can easily view/buy them on the website.
 
 When a customer asks a question:
 1. Understand their intent (searching, browsing, recommendation, etc.)
@@ -426,7 +433,8 @@ class RAGAgent:
                     "price": p["price"],
                     "description": p.get("description", "")[:200],
                     "stock": p.get("stock_quantity", "N/A"),
-                    "image": p.get("images", [{}])[0].get("src", "")
+                    "image": p.get("images", [{}])[0].get("src", ""),
+                    "permalink": p.get("permalink", "")
                 }
                 for p in products[:limit]
             ]
@@ -451,7 +459,8 @@ class RAGAgent:
                 "categories": [c.get("name") for c in p.get("categories", [])],
                 "images": [img["src"] for img in p.get("images", [])],
                 "sku": p.get("sku", ""),
-                "attributes": p.get("attributes", [])
+                "attributes": p.get("attributes", []),
+                "permalink": p.get("permalink", "")
             }
 
     async def get_recommendations(self, category: str = None, price_range: str = None):
@@ -479,7 +488,8 @@ class RAGAgent:
                 {
                     "name": p["name"],
                     "price": p["price"],
-                    "reason": f"Popular in {category or 'our store'}"
+                    "reason": f"Popular in {category or 'our store'}",
+                    "permalink": p.get("permalink", "")
                 }
                 for p in products[:5]
             ]
@@ -1019,9 +1029,16 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     limit = 8
 
     try:
+        category_slug = None
         if is_category:
             products = await get_products_by_category(category_id, page=page, limit=limit)
-            title = "📦 *Category Products*"
+            category = await get_category_by_id(category_id)
+            if isinstance(category, dict) and "error" not in category:
+                category_name = category.get("name", "Category")
+                category_slug = category.get("slug")
+                title = f"📦 *{md(category_name)} Products*"
+            else:
+                title = "📦 *Category Products*"
             back_callback = "browse"
             page_prefix = f"cat_{category_id}"
         else:
@@ -1067,6 +1084,10 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nav_row:
             keyboard.append(nav_row)
 
+        if is_category and category_slug:
+            category_url = f"{WOOCOMMERCE_URL}/product-category/{category_slug}/"
+            keyboard.append([InlineKeyboardButton("🌐 View Category on Website", url=category_url)])
+
         keyboard.append([InlineKeyboardButton("← Back", callback_data=back_callback)])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1102,7 +1123,11 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += "..."
             text += "\n\n"
 
-        keyboard = [[InlineKeyboardButton("← Back", callback_data="browse")]]
+        keyboard = []
+        permalink = product.get("permalink") if isinstance(product, dict) else None
+        if permalink:
+            keyboard.append([InlineKeyboardButton("🌐 View on Website", url=permalink)])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="browse")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
@@ -1183,6 +1208,10 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 ]
             )
+
+        import urllib.parse
+        search_url = f"{WOOCOMMERCE_URL}/?s={urllib.parse.quote(search_term)}&post_type=product"
+        keyboard.append([InlineKeyboardButton("🌐 View Search on Website", url=search_url)])
 
         keyboard.append([InlineKeyboardButton("← Back", callback_data="start_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)

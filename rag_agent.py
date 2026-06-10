@@ -31,6 +31,8 @@ Your goals:
 - Be conversational and friendly (in English or Bengali)
 - Handle queries intelligently by using tools when needed
 
+When recommending or listing products, always include their website link (permalink) so the customer can easily view/buy them on the website.
+
 When a customer asks a question:
 1. Understand their intent (searching, browsing, recommendation, etc.)
 2. Decide which tools to use
@@ -69,7 +71,8 @@ class RAGAgent:
                     "price": p["price"],
                     "description": p.get("description", "")[:200],
                     "stock": p.get("stock_quantity", "N/A"),
-                    "image": p.get("images", [{}])[0].get("src", "")
+                    "image": p.get("images", [{}])[0].get("src", ""),
+                    "permalink": p.get("permalink", "")
                 }
                 for p in products[:limit]
             ]
@@ -94,7 +97,8 @@ class RAGAgent:
                 "categories": [c.get("name") for c in p.get("categories", [])],
                 "images": [img["src"] for img in p.get("images", [])],
                 "sku": p.get("sku", ""),
-                "attributes": p.get("attributes", [])
+                "attributes": p.get("attributes", []),
+                "permalink": p.get("permalink", "")
             }
     
     async def get_recommendations(self, category: str = None, price_range: str = None):
@@ -118,7 +122,8 @@ class RAGAgent:
                 {
                     "name": p["name"],
                     "price": p["price"],
-                    "reason": f"Popular in {category or 'our store'}"
+                    "reason": f"Popular in {category or 'our store'}",
+                    "permalink": p.get("permalink", "")
                 }
                 for p in products[:5]
             ]
