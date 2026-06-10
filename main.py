@@ -201,11 +201,17 @@ async def get_all_products(limit=20):
     """Fetch latest products from WooCommerce."""
     return await woo_get(
         "products",
-        params={"per_page": limit, "orderby": "date", "order": "desc"},
+        params={
+            "per_page": limit,
+            "orderby": "date",
+            "order": "desc",
+            "status": "publish",
+            "stock_status": "instock",
+        },
     )
 
 
-async def get_categories(limit=50):
+async def get_categories(limit=100):
     """Fetch product categories that have products."""
     return await woo_get(
         "products/categories",
@@ -223,6 +229,8 @@ async def get_products_by_category(category_id, page=1, limit=8):
             "per_page": limit,
             "orderby": "date",
             "order": "desc",
+            "status": "publish",
+            "stock_status": "instock",
         },
     )
 
@@ -231,7 +239,14 @@ async def get_products_page(page=1, limit=8):
     """Fetch a page of latest products."""
     return await woo_get(
         "products",
-        params={"page": page, "per_page": limit, "orderby": "date", "order": "desc"},
+        params={
+            "page": page,
+            "per_page": limit,
+            "orderby": "date",
+            "order": "desc",
+            "status": "publish",
+            "stock_status": "instock",
+        },
     )
 
 
@@ -242,7 +257,15 @@ async def get_product_by_id(product_id):
 
 async def search_products(keyword):
     """Search products by keyword."""
-    return await woo_get("products", params={"search": keyword, "per_page": 10})
+    return await woo_get(
+        "products",
+        params={
+            "search": keyword,
+            "per_page": 10,
+            "status": "publish",
+            "stock_status": "instock",
+        },
+    )
 
 
 async def get_order_by_id(order_id):
@@ -297,20 +320,55 @@ async def browse_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.effective_message.reply_text(text=no_cat_text)
             return
 
-        # Filter: Top-level categories only and sort by menu_order
-        top_categories = [c for c in categories if c.get("parent") == 0]
-        top_categories.sort(key=lambda c: c.get("menu_order", 0))
+        # Organize categories hierarchically
+        category_ids = {c["id"] for c in categories}
+        # A category's parent is considered "missing/root" if parent ID is 0 or parent ID is not in our category list.
+        roots = [c for c in categories if c.get("parent", 0) == 0 or c.get("parent") not in category_ids]
+
+        # Sort roots by menu_order then name
+        roots.sort(key=lambda x: (x.get("menu_order", 0), x.get("name", "").lower()))
+
+        categories_by_parent = {}
+        for c in categories:
+            p_id = c.get("parent", 0)
+            categories_by_parent.setdefault(p_id, []).append(c)
+
+        for p_id in categories_by_parent:
+            categories_by_parent[p_id].sort(key=lambda x: (x.get("menu_order", 0), x.get("name", "").lower()))
+
+        ordered_categories = []
+        visited = set()
+
+        def add_children(cat, depth=0):
+            if cat["id"] in visited:
+                return
+            visited.add(cat["id"])
+            ordered_categories.append((cat, depth))
+            p_id = cat["id"]
+            if p_id in categories_by_parent:
+                for child in categories_by_parent[p_id]:
+                    add_children(child, depth + 1)
+
+        for root in roots:
+            add_children(root, 0)
 
         text = "👔 *Select a Category*\n\n"
         keyboard = []
 
-        for category in top_categories[:20]:
+        for category, depth in ordered_categories:
             name = category.get("name", "Category")
             count = category.get("count", 0)
+            indent = "  " * depth + "↳ " if depth > 0 else ""
+
+            # Truncate to ensure the button label looks neat
+            display_name = f"{indent}{name}"
+            if len(display_name) > 28:
+                display_name = display_name[:25] + "..."
+
             keyboard.append(
                 [
                     InlineKeyboardButton(
-                        f"{name[:28]} ({count})",
+                        f"{display_name} ({count})",
                         callback_data=f"cat_{category['id']}_1",
                     )
                 ]
