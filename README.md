@@ -8,7 +8,7 @@ app_port: 8000
 pinned: false
 ---
 
-# DeenCommerce Telegram Bot
+# WooCommerce Telegram Bot
 
 A simple Telegram bot for your WooCommerce store that allows customers to:
 - ✅ Browse products and check stock
