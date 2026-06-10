@@ -6,6 +6,8 @@ import re
 import socket
 
 import httpx
+import json
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -271,6 +273,560 @@ async def search_products(keyword):
 async def get_order_by_id(order_id):
     """Fetch a single order by ID."""
     return await woo_get(f"orders/{order_id}")
+
+
+# ==================== Conversational AI RAG Agent ====================
+
+SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DeenCommerce,
+a Bangladeshi e-commerce store selling clothing and fashion items.
+
+You have access to tools to:
+1. Search products by keyword or category
+2. Get product details (price, description, stock, images)
+3. Provide personalized recommendations
+
+Your goals:
+- Help customers find exactly what they're looking for
+- Answer questions about products, prices, and availability
+- Make personalized recommendations based on their needs
+- Be conversational and friendly (in English or Bengali)
+- Handle queries intelligently by using tools when needed
+
+When a customer asks a question:
+1. Understand their intent (searching, browsing, recommendation, etc.)
+2. Decide which tools to use
+3. Retrieve relevant information from our database
+4. Provide a helpful, conversational response
+
+Be concise in Telegram (max 1000 characters per message).
+Use emojis to make responses engaging.
+Always mention prices in ৳ (Taka).
+"""
+
+
+def get_ai_client():
+    provider = os.getenv("AI_PROVIDER", "anthropic").lower().strip()
+    model = os.getenv("AI_MODEL", "").strip()
+
+    if provider == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        client = AsyncAnthropic(api_key=api_key)
+        default_model = "claude-3-5-sonnet-20241022"
+        return "anthropic", client, model or default_model
+
+    elif provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        import openai
+        client = openai.AsyncOpenAI(api_key=api_key)
+        default_model = "gpt-4o-mini"
+        return "openai", client, model or default_model
+
+    elif provider == "grok":
+        api_key = os.getenv("GROK_API_KEY")
+        import openai
+        client = openai.AsyncOpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        default_model = "grok-2-1212"
+        return "openai", client, model or default_model
+
+    elif provider == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY")
+        import openai
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        default_model = "gemini-1.5-flash"
+        return "openai", client, model or default_model
+
+    elif provider == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        import openai
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+        default_model = "google/gemini-2.5-flash"
+        return "openai", client, model or default_model
+
+    elif provider == "groq":
+        api_key = os.getenv("GROQ_API_KEY")
+        import openai
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
+        )
+        default_model = "llama3-8b-8192"
+        return "openai", client, model or default_model
+
+    else:
+        # Fallback to Anthropic
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        client = AsyncAnthropic(api_key=api_key)
+        return "anthropic", client, "claude-3-5-sonnet-20241022"
+
+
+class RAGAgent:
+    def __init__(self, woocommerce_url, woocommerce_key, woocommerce_secret):
+        self.woo_url = woocommerce_url
+        self.woo_key = woocommerce_key
+        self.woo_secret = woocommerce_secret
+        self.conversation_history = []
+        self.client_type, self.client, self.model_name = get_ai_client()
+
+    async def search_products(self, query: str, limit: int = 5):
+        """Search products by keyword"""
+        async with httpx.AsyncClient(
+            auth=(self.woo_key, self.woo_secret),
+            timeout=10
+        ) as client:
+            response = await client.get(
+                f"{self.woo_url}/wp-json/wc/v3/products",
+                params={
+                    "search": query,
+                    "per_page": limit,
+                    "status": "publish",
+                    "stock_status": "instock"
+                }
+            )
+            products = response.json()
+
+            # Format for LLM
+            return [
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "price": p["price"],
+                    "description": p.get("description", "")[:200],
+                    "stock": p.get("stock_quantity", "N/A"),
+                    "image": p.get("images", [{}])[0].get("src", "")
+                }
+                for p in products[:limit]
+            ]
+
+    async def get_product_details(self, product_id: int):
+        """Get detailed product information"""
+        async with httpx.AsyncClient(
+            auth=(self.woo_key, self.woo_secret),
+            timeout=10
+        ) as client:
+            response = await client.get(
+                f"{self.woo_url}/wp-json/wc/v3/products/{product_id}"
+            )
+            p = response.json()
+
+            return {
+                "id": p["id"],
+                "name": p["name"],
+                "price": p["price"],
+                "description": p.get("description", ""),
+                "stock": p.get("stock_quantity", "N/A"),
+                "categories": [c.get("name") for c in p.get("categories", [])],
+                "images": [img["src"] for img in p.get("images", [])],
+                "sku": p.get("sku", ""),
+                "attributes": p.get("attributes", [])
+            }
+
+    async def get_recommendations(self, category: str = None, price_range: str = None):
+        """Get personalized product recommendations"""
+        params = {
+            "per_page": 5,
+            "status": "publish",
+            "stock_status": "instock"
+        }
+
+        if category:
+            params["category"] = category
+
+        async with httpx.AsyncClient(
+            auth=(self.woo_key, self.woo_secret),
+            timeout=10
+        ) as client:
+            response = await client.get(
+                f"{self.woo_url}/wp-json/wc/v3/products",
+                params=params
+            )
+            products = response.json()
+
+            return [
+                {
+                    "name": p["name"],
+                    "price": p["price"],
+                    "reason": f"Popular in {category or 'our store'}"
+                }
+                for p in products[:5]
+            ]
+
+    async def process_message(self, user_message: str, user_id: int = None) -> str:
+        """Process user message with RAG + LLM"""
+        if self.client_type == "anthropic":
+            return await self._process_anthropic(user_message)
+        else:
+            return await self._process_openai(user_message)
+
+    async def _process_anthropic(self, user_message: str) -> str:
+        """Process user message using AsyncAnthropic"""
+        # Add user message to history
+        self.conversation_history.append({
+            "role": "user",
+            "content": user_message
+        })
+
+        # Define available tools for Claude
+        tools = [
+            {
+                "name": "search_products",
+                "description": "Search for products by keyword (shirt, jeans, dress, etc.)",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Product search query"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of results (default 5)",
+                            "default": 5
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "get_product_details",
+                "description": "Get detailed information about a specific product",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "product_id": {
+                            "type": "integer",
+                            "description": "Product ID"
+                        }
+                    },
+                    "required": ["product_id"]
+                }
+            },
+            {
+                "name": "get_recommendations",
+                "description": "Get personalized product recommendations",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Product category (shirts, pants, dresses, etc.)"
+                        },
+                        "price_range": {
+                            "type": "string",
+                            "description": "Price range (budget, mid-range, premium)"
+                        }
+                    }
+                }
+            }
+        ]
+
+        # Call Claude with tools
+        response = await self.client.messages.create(
+            model=self.model_name,
+            max_tokens=1000,
+            system=SYSTEM_PROMPT,
+            tools=tools,
+            messages=self.conversation_history
+        )
+
+        # Process Claude's response
+        while response.stop_reason == "tool_use":
+            # Claude wants to use a tool
+            tool_calls = [block for block in response.content if block.type == "tool_use"]
+
+            # Execute tools and collect results
+            tool_results = []
+
+            for tool_call in tool_calls:
+                tool_name = tool_call.name
+                tool_input = tool_call.input
+
+                logger.info("🔧 Using tool: %s with input: %s", tool_name, tool_input)
+
+                try:
+                    if tool_name == "search_products":
+                        result = await self.search_products(
+                            query=tool_input["query"],
+                            limit=tool_input.get("limit", 5)
+                        )
+                    elif tool_name == "get_product_details":
+                        result = await self.get_product_details(
+                            product_id=tool_input["product_id"]
+                        )
+                    elif tool_name == "get_recommendations":
+                        result = await self.get_recommendations(
+                            category=tool_input.get("category"),
+                            price_range=tool_input.get("price_range")
+                        )
+                    else:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+                except Exception as e:
+                    result = {"error": str(e)}
+
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call.id,
+                    "content": json.dumps(result)
+                })
+
+            # Add assistant response and tool results to history
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": response.content
+            })
+
+            self.conversation_history.append({
+                "role": "user",
+                "content": tool_results
+            })
+
+            # Call Claude again with tool results
+            response = await self.client.messages.create(
+                model=self.model_name,
+                max_tokens=1000,
+                system=SYSTEM_PROMPT,
+                tools=tools,
+                messages=self.conversation_history
+            )
+
+        # Extract final text response
+        final_response = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                final_response += block.text
+
+        # Add assistant response to history
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": final_response
+        })
+
+        return final_response
+
+    async def _process_openai(self, user_message: str) -> str:
+        """Process user message using OpenAI-compatible API"""
+        # Add user message to history
+        self.conversation_history.append({
+            "role": "user",
+            "content": user_message
+        })
+
+        # Define tools in OpenAI format
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_products",
+                    "description": "Search for products by keyword (shirt, jeans, dress, etc.)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Product search query"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Number of results (default 5)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_product_details",
+                    "description": "Get detailed information about a specific product",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": {
+                                "type": "integer",
+                                "description": "Product ID"
+                            }
+                        },
+                        "required": ["product_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_recommendations",
+                    "description": "Get personalized product recommendations",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "description": "Product category (shirts, pants, dresses, etc.)"
+                            },
+                            "price_range": {
+                                "type": "string",
+                                "description": "Price range (budget, mid-range, premium)"
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        # Call OpenAI with tools
+        response = await self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
+            tools=tools,
+            tool_choice="auto"
+        )
+        assistant_msg = response.choices[0].message
+
+        while assistant_msg.tool_calls:
+            # Format and save assistant's message including tool calls
+            tool_calls_list = []
+            for tc in assistant_msg.tool_calls:
+                tool_calls_list.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                })
+
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": assistant_msg.content or "",
+                "tool_calls": tool_calls_list
+            })
+
+            # Execute tools
+            for tc in assistant_msg.tool_calls:
+                tool_name = tc.function.name
+                tool_input = json.loads(tc.function.arguments)
+
+                logger.info("🔧 Using tool: %s with input: %s", tool_name, tool_input)
+
+                try:
+                    if tool_name == "search_products":
+                        result = await self.search_products(
+                            query=tool_input["query"],
+                            limit=tool_input.get("limit", 5)
+                        )
+                    elif tool_name == "get_product_details":
+                        result = await self.get_product_details(
+                            product_id=tool_input["product_id"]
+                        )
+                    elif tool_name == "get_recommendations":
+                        result = await self.get_recommendations(
+                            category=tool_input.get("category"),
+                            price_range=tool_input.get("price_range")
+                        )
+                    else:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+                except Exception as e:
+                    result = {"error": str(e)}
+
+                # Add tool result message to history
+                self.conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": tool_name,
+                    "content": json.dumps(result)
+                })
+
+            # Call OpenAI again with tool results
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
+                tools=tools,
+                tool_choice="auto"
+            )
+            assistant_msg = response.choices[0].message
+
+        # Final response
+        final_response = assistant_msg.content or ""
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": final_response
+        })
+        return final_response
+
+
+# Store agents per user (so each user has their own conversation)
+user_agents = {}
+
+
+async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle conversational AI queries"""
+    user_id = update.effective_user.id
+    user_message = update.message.text
+
+    # Create agent for user if doesn't exist
+    if user_id not in user_agents:
+        user_agents[user_id] = RAGAgent(
+            WOOCOMMERCE_URL,
+            WOOCOMMERCE_KEY,
+            WOOCOMMERCE_SECRET
+        )
+
+    # Show typing indicator
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
+
+    try:
+        # Process message with RAG agent
+        response = await user_agents[user_id].process_message(user_message, user_id)
+
+        # Split long responses (Telegram has 4096 char limit)
+        if len(response) > 4000:
+            for i in range(0, len(response), 4000):
+                await update.message.reply_text(
+                    response[i:i+4000],
+                    parse_mode="Markdown"
+                )
+        else:
+            await update.message.reply_text(
+                response,
+                parse_mode="Markdown"
+            )
+
+    except Exception as e:
+        logger.error("AI chat error: %s", str(e))
+        await update.message.reply_text(
+            "❌ Error processing your request. Please try again."
+        )
+
+
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start AI chat - /ask <question>"""
+    if not context.args:
+        await update.message.reply_text(
+            "🤖 AI Shopping Assistant\n\n"
+            "Examples:\n"
+            "/ask I need a blue shirt\n"
+            "/ask What's your best summer dress?\n"
+            "/ask Show me affordable pants\n\n"
+            "Or just chat naturally - I'll help find what you need!"
+        )
+        return
+
+    question = " ".join(context.args)
+    original_text = update.message.text
+    update.message.text = question
+    try:
+        await ai_chat_handler(update, context)
+    finally:
+        update.message.text = original_text
 
 
 # ==================== Telegram Handlers ====================
@@ -648,7 +1204,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             billing_email = order.get("billing", {}).get("email", "").strip().lower()
             billing_phone = re.sub(r"[^\d\+]", "", order.get("billing", {}).get("phone", ""))
-            
+
             clean_input = contact_info.strip().lower()
             clean_input_phone = re.sub(r"[^\d\+]", "", clean_input)
 
@@ -695,6 +1251,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error("Error fetching order: %s", str(e))
             await update.message.reply_text("❌ Error fetching order.")
+        return
+
+    # Route normal text messages to conversational AI
+    await ai_chat_handler(update, context)
 
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -802,6 +1362,7 @@ application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("browse", browse_products))
 application.add_handler(CommandHandler("search", search_handler))
 application.add_handler(CommandHandler("my_order", my_order_handler))
+application.add_handler(CommandHandler("ask", ask_command))
 application.add_handler(CallbackQueryHandler(browse_products, pattern="^browse$"))
 application.add_handler(CallbackQueryHandler(show_products, pattern=r"^cat_\d+_\d+$"))
 application.add_handler(CallbackQueryHandler(show_products, pattern=r"^products_all_\d+$"))
