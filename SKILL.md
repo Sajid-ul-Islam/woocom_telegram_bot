@@ -43,4 +43,8 @@ graph TD
 - Use paginated lists for products to avoid Telegram message length and button limits.
 - Add a Back button on every submenu.
 - Clear pending user input state when returning to the main menu.
-- Support commands `/start`, `/help` (FAQ support options), `/browse` (top-level categories), and `/search` (direct/prompted product searches).
+- Support commands `/start` (personalizes greeting with `Assalamu Alaikum {name}`), `/help` (FAQ support options), `/browse` (top-level categories), `/search` (direct/prompted product searches), and `/ask` (AI assistant).
+- Dynamically synchronize bot commands on startup with `set_my_commands` by parsing active CommandHandlers.
+- Attach `🗑️ Reset Chat` (`reset_ai_chat`) and `← Back to Menu` (`start_menu`) inline buttons to final AI responses for continuous chat UI/UX.
+- Add `View on Website` / `View Category on Website` buttons on products, category product lists, and search results.
+- Implement/maintain multi-provider AI fallback logic for RAG with `max_tokens=1000` limits for OpenAI-compatible clients.
