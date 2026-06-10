@@ -10,7 +10,7 @@ import json
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
 from telegram.helpers import escape_markdown
 from telegram.ext import (
     Application,
@@ -81,6 +81,32 @@ async def lifespan(fastapi_app: FastAPI):
         await application.initialize()
         await application.start()
         logger.info("Telegram application initialized and started.")
+
+        # Collect and set bot commands dynamically from registered handlers
+        bot_commands = []
+        registered_set = set()
+        descriptions = {
+            "start": "Start the bot & main menu",
+            "strat": "Start the bot & main menu",
+            "help": "Support and FAQs",
+            "browse": "Browse categories",
+            "search": "Search products",
+            "my_order": "View order status",
+            "ask": "Ask the AI Shopping Assistant"
+        }
+
+        for group in application.handlers.values():
+            for handler in group:
+                if isinstance(handler, CommandHandler):
+                    for command in handler.commands:
+                        if command not in registered_set:
+                            registered_set.add(command)
+                            desc = descriptions.get(command, f"Use /{command} command")
+                            bot_commands.append(BotCommand(command, desc))
+
+        if bot_commands:
+            logger.info("Registering bot commands dynamically: %s", [c.command for c in bot_commands])
+            await application.bot.set_my_commands(bot_commands)
 
         # Auto-register webhook if external URL is provided
         webhook_base = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_URL")
@@ -686,7 +712,8 @@ class RAGAgent:
             model=self.model_name,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
             tools=tools,
-            tool_choice="auto"
+            tool_choice="auto",
+            max_tokens=1000
         )
         assistant_msg = response.choices[0].message
 
@@ -749,7 +776,8 @@ class RAGAgent:
                 model=self.model_name,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
                 tools=tools,
-                tool_choice="auto"
+                tool_choice="auto",
+                max_tokens=1000
             )
             assistant_msg = response.choices[0].message
 
