@@ -74,11 +74,13 @@ from utils import (
     extract_and_format_size_chart,
     md,
     strip_html,
+    strip_html_excluding_table,
     product_button_name,
     stock_display,
     woo_get
 )
 from rag_agent import RAGAgent
+from db import upsert_user
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):
@@ -155,7 +157,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 
-def main_menu(first_name=None):
+def main_menu(first_name=None, cart_count=0):
     keyboard = [
         [InlineKeyboardButton("👔 Categories", callback_data="browse")],
         [InlineKeyboardButton("🆕 Latest Products", callback_data="products_all_1")],
@@ -163,6 +165,9 @@ def main_menu(first_name=None):
         [InlineKeyboardButton("📦 My Order", callback_data="my_order")],
         [InlineKeyboardButton("🤖 Ask DEEN AI Agent", callback_data="ask_ai")],
     ]
+    if cart_count > 0:
+        keyboard.insert(0, [InlineKeyboardButton(f"🛍️ View Cart ({cart_count})", callback_data="view_cart")])
+        
     greeting = f"Assalamu Alaikum {md(first_name)}" if first_name else "Assalamu Alaikum"
     text = (
         f"🎉 *{greeting}! Welcome to DeenCommerce!*\n\n"
@@ -300,9 +305,10 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Create agent for user if doesn't exist
     if user_id not in user_agents:
         user_agents[user_id] = RAGAgent(
-            WOOCOMMERCE_URL,
-            WOOCOMMERCE_KEY,
-            WOOCOMMERCE_SECRET
+            woocommerce_url=WOOCOMMERCE_URL,
+            woocommerce_key=WOOCOMMERCE_KEY,
+            woocommerce_secret=WOOCOMMERCE_SECRET,
+            user_id=user_id
         )
 
     # Show typing indicator
@@ -431,9 +437,14 @@ async def reset_ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - main menu."""
-    context.user_data.clear()
+    if update.effective_user:
+        upsert_user(update.effective_user.id, update.effective_user.first_name)
+    
     first_name = update.effective_user.first_name if update.effective_user else None
-    text, reply_markup = main_menu(first_name)
+    cart_items = context.user_data.get("cart", [])
+    cart_count = sum(item.get("quantity", 1) for item in cart_items)
+    
+    text, reply_markup = main_menu(first_name, cart_count)
 
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -448,6 +459,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="Markdown",
     )
+
+
+async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    first_name = update.effective_user.first_name if update.effective_user else None
+    cart_items = context.user_data.get("cart", [])
+    cart_count = sum(item.get("quantity", 1) for item in cart_items)
+    
+    text, reply_markup = main_menu(first_name, cart_count)
+    await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
 async def browse_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -664,6 +687,7 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if size_chart:
             keyboard.append([InlineKeyboardButton("📏 Size Chart", callback_data=f"size_chart_{product_id}")])
 
+        keyboard.append([InlineKeyboardButton("🛒 Add to Cart", callback_data=f"add_cart_{product_id}")])
         keyboard.append([InlineKeyboardButton("← Back", callback_data="browse")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1014,6 +1038,94 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    product_id = query.data.removeprefix("add_cart_")
+    
+    if "cart" not in context.user_data:
+        context.user_data["cart"] = []
+        
+    cart = context.user_data["cart"]
+    found = False
+    for item in cart:
+        if str(item["id"]) == product_id:
+            item["quantity"] += 1
+            found = True
+            break
+            
+    if not found:
+        product = await get_product_by_id(product_id)
+        name = product.get("name", f"Product #{product_id}") if isinstance(product, dict) else f"Product #{product_id}"
+        cart.append({
+            "id": product_id,
+            "name": name,
+            "quantity": 1
+        })
+        
+    await query.answer(f"Added to cart! 🛒")
+
+async def view_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    cart = context.user_data.get("cart", [])
+    if not cart:
+        await query.edit_message_text(
+            "🛒 *Your Cart is Empty*",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="start_menu")]]),
+            parse_mode="Markdown"
+        )
+        return
+        
+    text = "🛒 *Your Shopping Cart*\n\n"
+    for idx, item in enumerate(cart, 1):
+        text += f"{idx}. {md(item['name'])} (x{item['quantity']})\n"
+        
+    keyboard = [
+        [InlineKeyboardButton("💳 Checkout", callback_data="checkout")],
+        [InlineKeyboardButton("🗑️ Empty Cart", callback_data="empty_cart")],
+        [InlineKeyboardButton("← Back to Menu", callback_data="start_menu")]
+    ]
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def empty_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    context.user_data["cart"] = []
+    await query.answer("Cart empty!")
+    await view_cart(update, context)
+
+async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    cart = context.user_data.get("cart", [])
+    if not cart:
+        await query.answer("Cart is empty!")
+        return
+        
+    await query.answer()
+    
+    add_to_cart_ids = ",".join(str(item["id"]) for item in cart)
+    quantities = ",".join(str(item["quantity"]) for item in cart)
+    
+    checkout_url = f"{WOOCOMMERCE_URL}/checkout/?add-to-cart={add_to_cart_ids}&quantity={quantities}"
+    
+    text = "💳 *Ready to Checkout!*\n\nClick the link below to securely complete your order on DeenCommerce.\n\n"
+    text += f"[Go to Checkout]({checkout_url})"
+    
+    keyboard = [
+        [InlineKeyboardButton("🌐 Proceed to Website", url=checkout_url)],
+        [InlineKeyboardButton("← Back to Cart", callback_data="view_cart")]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
 # ==================== Register Handlers ====================
 
 application.add_handler(CommandHandler("start", start))
@@ -1031,6 +1143,10 @@ application.add_handler(CallbackQueryHandler(ask_ai_callback_handler, pattern="^
 application.add_handler(CallbackQueryHandler(ai_chat_handler, pattern="^retry_ai_chat$"))
 application.add_handler(CallbackQueryHandler(reset_ai_chat_handler, pattern="^reset_ai_chat$"))
 application.add_handler(CallbackQueryHandler(view_product, pattern="^product_"))
+application.add_handler(CallbackQueryHandler(add_to_cart, pattern="^add_cart_"))
+application.add_handler(CallbackQueryHandler(view_cart, pattern="^view_cart$"))
+application.add_handler(CallbackQueryHandler(empty_cart, pattern="^empty_cart$"))
+application.add_handler(CallbackQueryHandler(checkout, pattern="^checkout$"))
 application.add_handler(CallbackQueryHandler(show_size_chart_handler, pattern="^size_chart_"))
 application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^start_menu$"))
 application.add_handler(CallbackQueryHandler(help_command, pattern="^help_menu$"))

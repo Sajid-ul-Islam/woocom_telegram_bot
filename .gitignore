@@ -38,3 +38,14 @@ wheels/
 # Logs
 *.log
 logs/
+
+# Databases (For future enhancements)
+*.sqlite3
+*.sqlite
+*.db
+
+# Testing and Linters
+.pytest_cache/
+.coverage
+.ruff_cache/
+.mypy_cache/

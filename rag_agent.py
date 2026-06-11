@@ -25,6 +25,7 @@ from utils import (
     extract_and_format_size_chart,
     woo_get
 )
+from db import get_user_history, update_user_history
 
 
 SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DeenCommerce,
@@ -62,6 +63,8 @@ You operate inside a Telegram bot. The user can also use the following slash com
 If a user wants to perform these actions, you can mention or guide them to use these slash commands.
 
 When a customer asks for a size chart or size guide of a product, retrieve the product details and output its size_chart string exactly as provided (with the monospace code block formatting).
+
+CRITICAL: If a requested product is 'Out of Stock', you MUST automatically trigger the `get_recommendations` tool based on the same category and offer 3 available alternatives immediately. Do not just say it's out of stock.
 
 When recommending or listing products, always include their website link (permalink) so the customer can easily view/buy them on the website.
 
@@ -228,11 +231,16 @@ def extract_and_format_size_chart(product):
 
 
 class RAGAgent:
-    def __init__(self, woocommerce_url, woocommerce_key, woocommerce_secret):
+    def __init__(self, woocommerce_url, woocommerce_key, woocommerce_secret, user_id=None):
         self.woo_url = woocommerce_url
         self.woo_key = woocommerce_key
         self.woo_secret = woocommerce_secret
+        self.user_id = user_id
+        
         self.conversation_history = []
+        if self.user_id:
+            self.conversation_history = get_user_history(self.user_id) or []
+            
         self.providers_chain = get_providers_chain()
 
     async def search_products(self, query: str, limit: int = 5):
@@ -322,6 +330,10 @@ class RAGAgent:
 
     async def process_message(self, user_message: str, user_id: int = None) -> str:
         """Process user message with RAG + LLM, falling back to other providers if needed"""
+        if user_id and not self.user_id:
+            self.user_id = user_id
+            self.conversation_history = get_user_history(self.user_id) or []
+
         if not self.providers_chain:
             raise RuntimeError("No valid AI providers configured in environment variables.")
 
@@ -350,6 +362,8 @@ class RAGAgent:
                     response = await self._process_openai(client, model_name)
 
                 logger.info("Successfully processed message using AI provider '%s'.", provider_name)
+                if self.user_id:
+                    update_user_history(self.user_id, self.conversation_history)
                 return response
             except Exception as e:
                 logger.error("AI provider '%s' failed: %s", provider_name, str(e))
