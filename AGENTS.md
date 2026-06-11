@@ -21,13 +21,14 @@ Required environment variables:
 
 ## Development Rules
 
-- Keep the bot database-free unless the user explicitly asks for persistence.
+- The bot uses **Supabase** for persisting user information (Telegram ID, first name) and AI conversation histories. Ensure `SUPABASE_URL` and `SUPABASE_KEY` are configured.
 - Do not expose customer orders by email alone. Order lookup must require at least order number plus billing email.
 - Keep Telegram webhook validation using `X-Telegram-Bot-Api-Secret-Token`.
 - Escape user and WooCommerce text before sending Markdown messages.
 - Use WooCommerce `stock_status` for availability. Show exact `stock_quantity` only when `manage_stock` is enabled and quantity is present.
 - Prefer small, direct helper functions over large framework changes.
 - Implement/maintain multi-provider AI fallback logic starting with the configured `AI_PROVIDER` and falling back sequentially.
+- The AI agent and the `/help` menu dynamically fetch the WooCommerce physical store address using `get_store_address()` to ensure accurate contact info.
 - Ensure all final AI agent responses are accompanied by navigation buttons (`🗑️ Reset Chat` -> `reset_ai_chat`, `← Back to Menu` -> `start_menu`) for continuous chat UI/UX.
 - Always include `max_tokens=1000` on OpenAI-compatible LLM completion calls to prevent token limit blocks.
 - Welcome the customer dynamically using their first name (e.g. `Assalamu Alaikum {first_name}`) in the main menu, safely escaped using the `md` helper.

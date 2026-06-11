@@ -16,7 +16,7 @@ A simple Telegram bot for your WooCommerce store that allows customers to:
 - ✅ View their existing orders
 
 **Features:**
-- No database required
+- Persistent user history and AI context via Supabase
 - Direct integration with WooCommerce REST API
 - Real-time product and order data
 - Product category browsing with paginated product lists
@@ -55,6 +55,8 @@ A simple Telegram bot for your WooCommerce store that allows customers to:
    WOOCOMMERCE_URL=https://YourSiteName.com
    WOOCOMMERCE_KEY=your_consumer_key
    WOOCOMMERCE_SECRET=your_consumer_secret
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_KEY=your_supabase_key
    ```
 
 ### Step 4: Install Dependencies
@@ -112,7 +114,12 @@ Once the deployment finishes and the service starts up, the webhook is automatic
 - Shows products by selected category with next/previous paging
 - Displays price in ৳ (Taka)
 - Shows real WooCommerce availability, and stock count when WooCommerce tracks product quantity
-- Click to view full product details with image
+- In-bot **Shopping Cart**: Click "Add to Cart" and build a cart directly inside Telegram, then securely checkout on the website!
+
+### 🤖 AI Shopping Assistant
+- Context-aware RAG AI that remembers your past conversations (persisted via Supabase)
+- Auto-recommends alternative items if a product is out of stock
+- Understands and searches the full product catalog
 
 ### 🔍 Search
 - Search products by keyword
@@ -171,12 +178,9 @@ deen_telegram_bot/
 ## Future Enhancements
 
 Add later (step by step):
-- Database (SQLite/PostgreSQL)
-- Shopping cart
-- Order placement
+- Order placement via native Telegram API
 - Payment integration (bKash/Nagad)
 - Shipping integration (Pathao)
-- AI product recommendations
 
 ---
 

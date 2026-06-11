@@ -10,6 +10,7 @@ graph TD
     Telegram[Telegram API] -->|Webhook POST /telegram/webhook| FastAPI[FastAPI App]
     FastAPI -->|Processes Updates| PTB[Python Telegram Bot Application]
     PTB -->|WooCommerce REST API| Woo[WooCommerce API /wp-json/wc/v3/]
+    PTB -->|Supabase SQL| Supabase[(Supabase Database)]
     PTB -->|Sends Messages/Photos| Telegram
 ```
 
@@ -18,7 +19,7 @@ graph TD
 
 1. Read `main.py` first. Most application behavior lives in this single file.
 2. Preserve the FastAPI webhook architecture. Do not switch to polling unless the user asks for local-only testing.
-3. Keep WooCommerce access read-only unless the user explicitly asks for cart, checkout, or order mutation features.
+3. Keep WooCommerce access read-only except for generating Shopping Cart checkout URLs, unless the user explicitly asks for cart, checkout, or order mutation features.
 4. Update `.env.example`, `README.md`, and `DEPLOY.md` whenever required environment variables or deployment commands change.
 5. Validate with `python -m py_compile main.py` and `git diff --check`.
 
@@ -42,7 +43,7 @@ graph TD
 - Keep callback data short and deterministic.
 - Use paginated lists for products to avoid Telegram message length and button limits.
 - Add a Back button on every submenu.
-- Clear pending user input state when returning to the main menu.
+- Clear pending user input state when returning to the main menu. (Note: Do not clear `context.user_data` entirely to preserve the user's shopping cart).
 - Support commands `/start` (personalizes greeting with `Assalamu Alaikum {name}`), `/help` (FAQ support options), `/browse` (top-level categories), `/search` (direct/prompted product searches), and `/ask` (AI assistant).
 - Dynamically synchronize bot commands on startup with `set_my_commands` by parsing active CommandHandlers.
 - Attach `🗑️ Reset Chat` (`reset_ai_chat`) and `← Back to Menu` (`start_menu`) inline buttons to final AI responses for continuous chat UI/UX.
