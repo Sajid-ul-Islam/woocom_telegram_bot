@@ -1,5 +1,5 @@
 ---
-title: DeenCommerce Telegram Bot
+title: WooCommerce Telegram Bot
 emoji: 🤖
 colorFrom: blue
 colorTo: indigo
