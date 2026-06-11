@@ -23,7 +23,8 @@ from utils import (
     products_cache,
     preprocess_search_query,
     extract_and_format_size_chart,
-    woo_get
+    woo_get,
+    get_store_address
 )
 from db import get_user_history, update_user_history
 
@@ -329,10 +330,14 @@ class RAGAgent:
             ]
 
     async def process_message(self, user_message: str, user_id: int = None) -> str:
-        """Process user message with RAG + LLM, falling back to other providers if needed"""
-        if user_id and not self.user_id:
-            self.user_id = user_id
-            self.conversation_history = get_user_history(self.user_id) or []
+        """Process a user message using ReAct loop"""
+        if user_id is not None and not self.conversation_history:
+            self.conversation_history = get_user_history(user_id)
+            
+        store_address = await get_store_address()
+        dynamic_system_prompt = SYSTEM_PROMPT + f"\n\n[STORE ADDRESS]\nThe physical outlet address for DeenCommerce is: {store_address}\nIf a customer asks where your store is located or if they can visit, provide them with this address."
+
+        messages = self.conversation_history + [{"role": "user", "content": user_message}]
 
         if not self.providers_chain:
             raise RuntimeError("No valid AI providers configured in environment variables.")
@@ -357,9 +362,9 @@ class RAGAgent:
 
             try:
                 if client_type == "anthropic":
-                    response = await self._process_anthropic(client, model_name)
+                    response = await self._process_anthropic(client, model_name, dynamic_system_prompt)
                 else:
-                    response = await self._process_openai(client, model_name)
+                    response = await self._process_openai(client, model_name, dynamic_system_prompt)
 
                 logger.info("Successfully processed message using AI provider '%s'.", provider_name)
                 if self.user_id:
@@ -379,7 +384,7 @@ class RAGAgent:
         self.conversation_history = history_backup
         raise last_error or RuntimeError("All AI providers in chain failed.")
 
-    async def _process_anthropic(self, client, model_name: str) -> str:
+    async def _process_anthropic(self, client, model_name: str, dynamic_system_prompt: str) -> str:
         """Process user message using AsyncAnthropic"""
 
         # Define available tools for Claude
@@ -440,7 +445,7 @@ class RAGAgent:
         response = await client.messages.create(
             model=model_name,
             max_tokens=1000,
-            system=SYSTEM_PROMPT,
+            system=dynamic_system_prompt,
             tools=tools,
             messages=self.conversation_history
         )
@@ -500,7 +505,7 @@ class RAGAgent:
             response = await client.messages.create(
                 model=model_name,
                 max_tokens=1000,
-                system=SYSTEM_PROMPT,
+                system=dynamic_system_prompt,
                 tools=tools,
                 messages=self.conversation_history
             )
@@ -519,7 +524,7 @@ class RAGAgent:
 
         return final_response
 
-    async def _process_openai(self, client, model_name: str) -> str:
+    async def _process_openai(self, client, model_name: str, dynamic_system_prompt: str) -> str:
         """Process user message using OpenAI-compatible API"""
 
         # Define tools in OpenAI format
@@ -588,7 +593,7 @@ class RAGAgent:
         # Call OpenAI with tools
         response = await client.chat.completions.create(
             model=model_name,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
+            messages=[{"role": "system", "content": dynamic_system_prompt}] + self.conversation_history,
             tools=tools,
             tool_choice="auto",
             max_tokens=1000
@@ -652,7 +657,7 @@ class RAGAgent:
             # Call OpenAI again with tool results
             response = await client.chat.completions.create(
                 model=model_name,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.conversation_history,
+                messages=[{"role": "system", "content": dynamic_system_prompt}] + self.conversation_history,
                 tools=tools,
                 tool_choice="auto",
                 max_tokens=1000

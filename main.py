@@ -77,7 +77,8 @@ from utils import (
     strip_html_excluding_table,
     product_button_name,
     stock_display,
-    woo_get
+    woo_get,
+    get_store_address
 )
 from rag_agent import RAGAgent
 from db import upsert_user
@@ -1020,13 +1021,15 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Sizing exchanges are free (only delivery charge applies for sending back)."
         )
     elif faq_type == "faq_support":
+        address = await get_store_address()
         text = (
             "📞 *Contact DEEN Commerce Support*\n\n"
             "Need to talk to a human agent? We are here to help!\n\n"
             "💬 *Messenger*: [Click here to message us](https://m.me/deencommerce)\n"
             "🟢 *WhatsApp*: `+8801752700500`\n"
             "📞 *Hotline*: `+8809612345678` (10:00 AM - 8:00 PM)\n"
-            "✉️ *Email*: `support@deencommerce.com`"
+            "✉️ *Email*: `support@deencommerce.com`\n\n"
+            f"📍 *Store Address*: {md(address)}"
         )
     else:
         text = "Topic not found."
@@ -1056,6 +1059,10 @@ async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     if not found:
         product = await get_product_by_id(product_id)
+        if isinstance(product, dict) and "error" in product:
+            await query.answer("❌ Failed to add product. It may not exist.", show_alert=True)
+            return
+            
         name = product.get("name", f"Product #{product_id}") if isinstance(product, dict) else f"Product #{product_id}"
         cart.append({
             "id": product_id,

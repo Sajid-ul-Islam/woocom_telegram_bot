@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Global HTTP client to reuse TCP/TLS connections
 http_client = None
+store_address_cache = None
 
 class SimpleCache:
     def __init__(self, ttl_seconds=3600):
@@ -80,6 +81,34 @@ def preprocess_search_query(query):
     words = q_clean.split()
     mapped_words = [SYNONYMS_MAP.get(w, w) for w in words]
     return " ".join(mapped_words)
+
+async def get_store_address():
+    global store_address_cache
+    if store_address_cache:
+        return store_address_cache
+        
+    try:
+        settings = await woo_get("settings/general")
+        if isinstance(settings, list):
+            address_1 = ""
+            address_2 = ""
+            city = ""
+            for s in settings:
+                if s["id"] == "woocommerce_store_address":
+                    address_1 = s.get("value", "")
+                elif s["id"] == "woocommerce_store_address_2":
+                    address_2 = s.get("value", "")
+                elif s["id"] == "woocommerce_store_city":
+                    city = s.get("value", "")
+                    
+            parts = [p for p in [address_1, address_2, city] if p]
+            if parts:
+                store_address_cache = ", ".join(parts)
+                return store_address_cache
+    except Exception as e:
+        logger.error(f"Error fetching store address: {e}")
+        
+    return "Store address not available."
 
 async def get_pathao_tracking_status(consignment_id):
     try:
