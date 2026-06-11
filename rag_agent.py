@@ -163,6 +163,7 @@ def get_providers_chain(primary_provider_name=None):
                 })
             except Exception as e:
                 logger.error("Failed to initialize fallback provider %s: %s", p_name, str(e))
+    return chain
 
 def html_table_to_markdown(table_html):
     rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE)
@@ -258,20 +259,21 @@ class RAGAgent:
             }
         )
         if isinstance(products, dict) and "error" in products:
-            products = []
-            # Format for LLM
-            return [
-                {
-                    "id": p["id"],
-                    "name": p["name"],
-                    "price": p["price"],
-                    "description": p.get("description", "")[:200],
-                    "stock": p.get("stock_quantity", "N/A"),
-                    "image": p.get("images", [{}])[0].get("src", ""),
-                    "permalink": p.get("permalink", "")
-                }
-                for p in products[:limit]
-            ]
+            return []
+            
+        # Format for LLM
+        return [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "price": p["price"],
+                "description": p.get("description", "")[:200],
+                "stock": p.get("stock_quantity", "N/A"),
+                "image": p.get("images", [{}])[0].get("src", ""),
+                "permalink": p.get("permalink", "")
+            }
+            for p in products[:limit]
+        ]
 
     async def get_product_details(self, product_id: int):
         """Get detailed product information (with caching)"""
@@ -285,21 +287,21 @@ class RAGAgent:
         if isinstance(p, dict) and "error" in p:
             return {"error": "Product not found."}
 
-            size_chart = extract_and_format_size_chart(p)
-            return {
-                "id": p["id"],
-                "name": p["name"],
-                "price": p["price"],
-                "description": p.get("description", ""),
-                "short_description": p.get("short_description", ""),
-                "size_chart": size_chart if size_chart else "No size chart available.",
-                "stock": p.get("stock_quantity", "N/A"),
-                "categories": [c.get("name") for c in p.get("categories", [])],
-                "images": [img["src"] for img in p.get("images", [])],
-                "sku": p.get("sku", ""),
-                "attributes": p.get("attributes", []),
-                "permalink": p.get("permalink", "")
-            }
+        size_chart = extract_and_format_size_chart(p)
+        return {
+            "id": p["id"],
+            "name": p["name"],
+            "price": p["price"],
+            "description": p.get("description", ""),
+            "short_description": p.get("short_description", ""),
+            "size_chart": size_chart if size_chart else "No size chart available.",
+            "stock": p.get("stock_quantity", "N/A"),
+            "categories": [c.get("name") for c in p.get("categories", [])],
+            "images": [img["src"] for img in p.get("images", [])],
+            "sku": p.get("sku", ""),
+            "attributes": p.get("attributes", []),
+            "permalink": p.get("permalink", "")
+        }
 
     async def get_recommendations(self, category: str = None, price_range: str = None):
         """Get personalized product recommendations"""
@@ -317,17 +319,17 @@ class RAGAgent:
             params=params
         )
         if isinstance(products, dict) and "error" in products:
-            products = []
+            return []
 
-            return [
-                {
-                    "name": p["name"],
-                    "price": p["price"],
-                    "reason": f"Popular in {category or 'our store'}",
-                    "permalink": p.get("permalink", "")
-                }
-                for p in products[:5]
-            ]
+        return [
+            {
+                "name": p["name"],
+                "price": p["price"],
+                "reason": f"Popular in {category or 'our store'}",
+                "permalink": p.get("permalink", "")
+            }
+            for p in products[:5]
+        ]
 
     async def process_message(self, user_message: str, user_id: int = None) -> str:
         """Process a user message using ReAct loop"""

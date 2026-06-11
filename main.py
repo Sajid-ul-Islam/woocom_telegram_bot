@@ -1046,6 +1046,21 @@ async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     product_id = query.data.removeprefix("add_cart_")
     
+    product = await get_product_by_id(product_id)
+    if isinstance(product, dict) and "error" in product:
+        await query.answer("❌ Failed to add product. It may not exist.", show_alert=True)
+        return
+
+    # Check if it's a variable product
+    if product.get("type") == "variable":
+        # Guide user to website for variation selection
+        permalink = product.get("permalink")
+        await query.answer("This product has sizes/options. Please select them on our website.", show_alert=True)
+        if permalink:
+            keyboard = [[InlineKeyboardButton("🌐 Select Size & Buy on Website", url=permalink)]]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
     if "cart" not in context.user_data:
         context.user_data["cart"] = []
         
@@ -1058,12 +1073,7 @@ async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
             
     if not found:
-        product = await get_product_by_id(product_id)
-        if isinstance(product, dict) and "error" in product:
-            await query.answer("❌ Failed to add product. It may not exist.", show_alert=True)
-            return
-            
-        name = product.get("name", f"Product #{product_id}") if isinstance(product, dict) else f"Product #{product_id}"
+        name = product.get("name", f"Product #{product_id}")
         cart.append({
             "id": product_id,
             "name": name,
@@ -1115,13 +1125,26 @@ async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await query.answer()
     
-    add_to_cart_ids = ",".join(str(item["id"]) for item in cart)
-    quantities = ",".join(str(item["quantity"]) for item in cart)
+    # WooCommerce standard add-to-cart URL only supports one product reliably via query params.
+    # For multiple products, we should ideally use a custom endpoint or just link to the cart page
+    # if we can't reliably sync the session.
+    # However, since we want to "add" them, we'll use the first item and advise user.
     
-    checkout_url = f"{WOOCOMMERCE_URL}/checkout/?add-to-cart={add_to_cart_ids}&quantity={quantities}"
+    if len(cart) == 1:
+        item = cart[0]
+        checkout_url = f"{WOOCOMMERCE_URL}/checkout/?add-to-cart={item['id']}&quantity={item['quantity']}"
+    else:
+        # For multiple items, WooCommerce doesn't natively support comma-separated IDs in the standard 'add-to-cart' param.
+        # We will link to the cart page and advise.
+        checkout_url = f"{WOOCOMMERCE_URL}/cart/"
+
+    text = "💳 *Ready to Checkout!*\n\n"
+    if len(cart) > 1:
+        text += "Since you have multiple items, please add them on our website for the best experience.\n\n"
+    else:
+        text += "Click the link below to securely complete your order on DeenCommerce.\n\n"
     
-    text = "💳 *Ready to Checkout!*\n\nClick the link below to securely complete your order on DeenCommerce.\n\n"
-    text += f"[Go to Checkout]({checkout_url})"
+    text += f"[Go to DeenCommerce]({checkout_url})"
     
     keyboard = [
         [InlineKeyboardButton("🌐 Proceed to Website", url=checkout_url)],
