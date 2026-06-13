@@ -84,7 +84,7 @@ from utils import (
     get_store_address
 )
 from rag_agent import RAGAgent
-from db import upsert_user, set_subscription
+from db import upsert_user, set_subscription, track_command
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):
@@ -316,6 +316,16 @@ async def get_order_by_id(order_id):
 
 
 
+# ── Usage Tracking ────────────────────────────────────────────────────────────
+def _track(user_id: int | None, action: str):
+    """Fire-and-forget usage tracker. Never raises."""
+    if user_id:
+        try:
+            track_command(user_id, action)
+        except Exception:
+            pass
+
+
 # Store agents per user (so each user has their own conversation)
 # Includes last-access timestamp for TTL-based memory cleanup
 user_agents = {}          # { user_id: RAGAgent }
@@ -380,6 +390,7 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, di
 
         # Process message with RAG agent
         response, extra_buttons = await user_agents[user_id].process_message(user_message, user_id, cart=cart)
+        _track(user_id, "ai_chat")
 
         # Attach continuous chat options and extra buttons to the final response
         keyboard = []
@@ -530,6 +541,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - main menu."""
     if update.effective_user:
         upsert_user(update.effective_user.id, update.effective_user.first_name)
+        _track(update.effective_user.id, "start")
     
     first_name = update.effective_user.first_name if update.effective_user else None
     cart_items = context.user_data.get("cart", [])
@@ -573,6 +585,7 @@ async def browse_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
+    _track(update.effective_user.id if update.effective_user else None, "browse")
 
     try:
         categories = await get_categories()
@@ -778,8 +791,8 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show product details."""
     query = update.callback_query
     product_id = query.data.removeprefix("product_")
-
     await query.answer()
+    _track(update.effective_user.id if update.effective_user else None, "product_view")
 
     try:
         product = await get_product_by_id(product_id)
@@ -838,6 +851,7 @@ async def show_size_chart_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     product_id = query.data.removeprefix("size_chart_")
     await query.answer()
+    _track(update.effective_user.id if update.effective_user else None, "size_chart")
 
     try:
         product = await get_product_by_id(product_id)
@@ -870,6 +884,7 @@ async def show_size_chart_handler(update: Update, context: ContextTypes.DEFAULT_
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle search command (via button click or direct /search command)."""
     query = update.callback_query
+    _track(update.effective_user.id if update.effective_user else None, "search")
 
     if query:
         await query.answer()
@@ -944,6 +959,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def my_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Prompt user for a single order lookup."""
     query = update.callback_query
+    _track(update.effective_user.id if update.effective_user else None, "my_order")
     text = (
         "📦 *View Your Order*\n\n"
         "Enter your order number and billing email or phone in one message:\n"
@@ -1000,6 +1016,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         context.user_data["waiting_for_order_lookup"] = False
+        _track(update.effective_user.id if update.effective_user else None, "order_lookup")
 
         try:
             order = await get_order_by_id(order_id)
@@ -1084,6 +1101,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command - displays FAQ options."""
+    _track(update.effective_user.id if update.effective_user else None, "help")
     context.user_data.pop("waiting_for_search", None)
     context.user_data.pop("waiting_for_order_lookup", None)
 
@@ -1178,6 +1196,7 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     product_id = query.data.removeprefix("add_cart_")
+    _track(update.effective_user.id if update.effective_user else None, "add_cart")
     
     product = await get_product_by_id(product_id)
     if isinstance(product, dict) and "error" in product:
@@ -1256,6 +1275,7 @@ async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Cart is empty!")
         return
         
+    _track(update.effective_user.id if update.effective_user else None, "checkout")
     await query.answer()
     
     # WooCommerce standard add-to-cart URL only supports one product reliably via query params.
@@ -1293,12 +1313,14 @@ async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allow user to opt out of broadcasts."""
+    _track(update.effective_user.id, "unsubscribe")
     set_subscription(update.effective_user.id, False)
     await update.message.reply_text("🔇 You have been *unsubscribed* from promotional broadcasts.\n\nUse /subscribe to opt back in.", parse_mode="Markdown")
 
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allow user to opt into broadcasts."""
+    _track(update.effective_user.id, "subscribe")
     set_subscription(update.effective_user.id, True)
     await update.message.reply_text("🔊 You are now *subscribed* to promotional broadcasts!", parse_mode="Markdown")
 
@@ -1446,114 +1468,215 @@ async def admin_logout():
 
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
-    """A simple HTML dashboard for tracking customers and AI usage."""
+    """Enhanced admin dashboard with command tracking and activity analytics."""
     session_cookie = request.cookies.get("admin_session")
     if session_cookie != TELEGRAM_WEBHOOK_SECRET:
         return RedirectResponse(url="/admin/login", status_code=303)
-    
+
     from db import supabase
     if not supabase:
         return "<h1>Supabase not configured</h1>"
-    
+
+    # Fetch users — try with all tracking columns, fall back gracefully
     try:
-        response = supabase.table("users").select("id, first_name, is_subscribed, chat_history").execute()
+        response = supabase.table("users").select(
+            "id, first_name, is_subscribed, chat_history, command_counts, last_active"
+        ).execute()
         users = response.data or []
     except Exception as e:
-        # Column may not exist yet — fall back without is_subscribed
         err_str = str(e)
-        if "is_subscribed" in err_str or "42703" in err_str:
-            logger.warning("is_subscribed column missing in Supabase. Run: ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT TRUE;")
+        if "42703" in err_str or "command_counts" in err_str or "last_active" in err_str or "is_subscribed" in err_str:
+            logger.warning("Tracking columns missing. Run the migration SQL in Supabase.")
             try:
                 response = supabase.table("users").select("id, first_name, chat_history").execute()
                 users = response.data or []
             except Exception as e2:
-                return f"<h1>Error fetching data: {html.escape(str(e2))}</h1><p>Please check your Supabase configuration.</p>"
+                return f"<h1>Error: {html.escape(str(e2))}</h1>"
         else:
             return f"<h1>Error fetching data: {html.escape(str(e))}</h1>"
 
+    # ── Compute stats ────────────────────────────────────────────────────────
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+
+    def parse_ts(ts_str):
+        if not ts_str:
+            return None
+        try:
+            return datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def time_ago(ts_str):
+        ts = parse_ts(ts_str)
+        if not ts:
+            return "—"
+        diff = now - ts
+        if diff.days > 30:
+            return f"{diff.days // 30}mo ago"
+        if diff.days > 0:
+            return f"{diff.days}d ago"
+        if diff.seconds > 3600:
+            return f"{diff.seconds // 3600}h ago"
+        if diff.seconds > 60:
+            return f"{diff.seconds // 60}m ago"
+        return "Just now"
+
     total_users = len(users)
     subscribed_users = sum(1 for u in users if u.get("is_subscribed") is not False)
-    
+    active_today = sum(1 for u in users if parse_ts(u.get("last_active")) and (now - parse_ts(u.get("last_active"))).days < 1)
+    active_week  = sum(1 for u in users if parse_ts(u.get("last_active")) and (now - parse_ts(u.get("last_active"))).days < 7)
+
     total_ai_queries = 0
-    active_ai_users = 0
-    rows = ""
+    active_ai_users  = 0
+    global_cmd_totals = {}
 
     for u in users:
         history = u.get("chat_history") or []
-        queries = sum(1 for msg in history if msg.get("role") == "user")
-        if queries > 0:
+        q = sum(1 for m in history if m.get("role") == "user")
+        if q > 0:
             active_ai_users += 1
-        total_ai_queries += queries
-        
-        sub_status = "✅ Yes" if u.get("is_subscribed") is not False else "❌ No"
+        total_ai_queries += q
+        counts = u.get("command_counts") or {}
+        for cmd, n in counts.items():
+            global_cmd_totals[cmd] = global_cmd_totals.get(cmd, 0) + n
+
+    total_commands = sum(global_cmd_totals.values())
+
+    # ── Build command breakdown table rows ───────────────────────────────────
+    COMMAND_LABELS = {
+        "start": "🏠 /start — Main Menu",
+        "browse": "👔 /browse — Browse Categories",
+        "search": "🔍 /search — Product Search",
+        "my_order": "📦 /my_order — Order Status",
+        "ask": "🤖 /ask — AI Query (command)",
+        "ai_chat": "💬 AI Chat Message",
+        "help": "❓ /help — FAQ & Support",
+        "order_lookup": "🔎 Order Lookup (form)",
+        "product_view": "🛍️ Product Detail View",
+        "add_cart": "🛒 Add to Cart",
+        "checkout": "💳 Checkout",
+        "size_chart": "📏 Size Chart View",
+        "subscribe": "🔔 Subscribe",
+        "unsubscribe": "🔕 Unsubscribe",
+    }
+    cmd_rows = ""
+    for cmd, count in sorted(global_cmd_totals.items(), key=lambda x: -x[1]):
+        label = COMMAND_LABELS.get(cmd, f"/{cmd}")
+        pct = f"{100*count/total_commands:.1f}%" if total_commands else "0%"
+        bar_w = int(100 * count / total_commands) if total_commands else 0
+        cmd_rows += f"""
+        <tr>
+            <td>{label}</td>
+            <td style="text-align:right;font-weight:bold">{count:,}</td>
+            <td style="width:180px">
+                <div style="background:#eee;border-radius:4px;height:12px">
+                    <div style="background:#4e73df;border-radius:4px;height:12px;width:{bar_w}%"></div>
+                </div>
+            </td>
+            <td style="text-align:right;color:#666">{pct}</td>
+        </tr>"""
+    if not cmd_rows:
+        cmd_rows = "<tr><td colspan='4' style='color:#aaa;text-align:center'>No command data yet. Run migration SQL to enable tracking.</td></tr>"
+
+    # ── Build user table rows ────────────────────────────────────────────────
+    user_rows = ""
+    for u in users:
+        history = u.get("chat_history") or []
+        ai_q = sum(1 for m in history if m.get("role") == "user")
+        counts = u.get("command_counts") or {}
+        total_cmds = sum(counts.values())
+        top_cmd = max(counts, key=counts.get) if counts else "—"
+        top_label = COMMAND_LABELS.get(top_cmd, top_cmd).split(" ")[0] if counts else "—"
+        sub_badge = "<span class='badge-yes'>✅ Yes</span>" if u.get("is_subscribed") is not False else "<span class='badge-no'>❌ No</span>"
         name = html.escape(u.get("first_name") or "N/A")
-        
-        action_btn = f"<a href='/admin/chat_logs/{u.get('id')}' class='btn-view'>💬 View Logs</a>" if queries > 0 else "<span style='color:#ccc;'>No AI Chat</span>"
-        
-        rows += f"<tr><td>{u.get('id')}</td><td>{name}</td><td>{sub_status}</td><td>{queries}</td><td>{action_btn}</td></tr>"
+        la = time_ago(u.get("last_active"))
+        logs_btn = f"<a href='/admin/chat_logs/{u.get('id')}' class='btn-view'>💬 Logs</a>" if ai_q > 0 else "<span style='color:#ccc'>—</span>"
+        user_rows += f"<tr><td>{u.get('id')}</td><td>{name}</td><td>{la}</td><td>{sub_badge}</td><td style='text-align:center'>{ai_q}</td><td style='text-align:center'>{total_cmds}</td><td style='text-align:center'>{top_label}</td><td>{logs_btn}</td></tr>"
+
+    migration_warn = ""
+    if not any(u.get("command_counts") for u in users):
+        migration_warn = """
+        <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:14px 20px;margin-bottom:20px">
+            ⚠️ <strong>Run this SQL in Supabase to enable command tracking:</strong><br>
+            <code style="font-size:0.9em">
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active TIMESTAMPTZ;<br>
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS command_counts JSONB DEFAULT '{}';
+            </code>
+        </div>"""
 
     return f"""
     <html>
-        <head>
-            <title>DeenCommerce Admin</title>
-            <!-- DataTables CSS -->
-            <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-            <style>
-                body {{ font-family: system-ui, sans-serif; margin: 40px; background: #f4f4f9; color: #333; }}
-                .header {{ display: flex; justify-content: space-between; align-items: center; }}
-                .logout-btn {{ background: #dc3545; color: white; text-decoration: none; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 14px; }}
-                .logout-btn:hover {{ background: #c82333; }}
-                .card {{ background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                .btn-view {{ background: #17a2b8; color: white; text-decoration: none; padding: 5px 10px; border-radius: 4px; font-size: 13px; }}
-                .btn-view:hover {{ background: #138496; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
-                th, td {{ padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>🤖 DeenCommerce Bot Admin Dashboard</h1>
-                <a href="/admin/logout" class="logout-btn">Logout</a>
-            </div>
-            
-            <div class="card">
-                <h2>📊 Quick Stats</h2>
-                <p><strong>Total Customers:</strong> {total_users}</p>
-                <p><strong>Subscribed to Broadcasts:</strong> {subscribed_users}</p>
-                <p><strong>Customers Using AI:</strong> {active_ai_users}</p>
-                <p><strong>Total AI Queries:</strong> {total_ai_queries}</p>
+    <head>
+        <title>DeenCommerce Admin</title>
+        <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+        <style>
+            *{{box-sizing:border-box;margin:0;padding:0}}
+            body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f0f2f5;color:#333}}
+            .topbar{{background:#1a1a2e;color:white;padding:16px 30px;display:flex;justify-content:space-between;align-items:center}}
+            .topbar h1{{font-size:1.3em;font-weight:600}}
+            .logout-btn{{background:#e74c3c;color:white;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600}}
+            .content{{padding:28px 32px}}
+            .stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:24px}}
+            .stat-card{{background:white;border-radius:10px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.08);text-align:center}}
+            .stat-num{{font-size:2em;font-weight:700;color:#1a1a2e}}
+            .stat-lbl{{color:#888;font-size:.8em;margin-top:4px}}
+            .card{{background:white;border-radius:10px;padding:22px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:22px}}
+            .card h2{{font-size:1.1em;margin-bottom:14px;color:#1a1a2e}}
+            table{{width:100%;border-collapse:collapse}}
+            th,td{{padding:10px 12px;border-bottom:1px solid #f0f0f0;font-size:.88em}}
+            th{{background:#f8f9fb;font-weight:600;color:#555}}
+            .btn-view{{background:#17a2b8;color:white;text-decoration:none;padding:4px 10px;border-radius:4px;font-size:12px;white-space:nowrap}}
+            .badge-yes{{color:#27ae60;font-weight:600}}
+            .badge-no{{color:#e74c3c;font-weight:600}}
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <h1>🤖 DeenCommerce Bot — Admin Dashboard</h1>
+            <a href="/admin/logout" class="logout-btn">Logout</a>
+        </div>
+        <div class="content">
+            {migration_warn}
+            <div class="stats-grid">
+                <div class="stat-card"><div class="stat-num">{total_users}</div><div class="stat-lbl">👥 Total Users</div></div>
+                <div class="stat-card"><div class="stat-num">{active_today}</div><div class="stat-lbl">🟢 Active Today</div></div>
+                <div class="stat-card"><div class="stat-num">{active_week}</div><div class="stat-lbl">📅 Active This Week</div></div>
+                <div class="stat-card"><div class="stat-num">{subscribed_users}</div><div class="stat-lbl">🔔 Subscribed</div></div>
+                <div class="stat-card"><div class="stat-num">{active_ai_users}</div><div class="stat-lbl">🤖 AI Users</div></div>
+                <div class="stat-card"><div class="stat-num">{total_ai_queries:,}</div><div class="stat-lbl">💬 AI Messages</div></div>
+                <div class="stat-card"><div class="stat-num">{total_commands:,}</div><div class="stat-lbl">🖱️ Commands Run</div></div>
             </div>
 
             <div class="card">
-                <h2>👥 Customer List</h2>
+                <h2>📊 Command Usage Breakdown</h2>
+                <table>
+                    <thead><tr><th>Command / Action</th><th style="text-align:right">Count</th><th>Usage Bar</th><th style="text-align:right">%</th></tr></thead>
+                    <tbody>{cmd_rows}</tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>👥 Customer Activity</h2>
                 <table id="usersTable" class="display">
                     <thead>
                         <tr>
-                            <th>Telegram ID</th>
-                            <th>Name</th>
-                            <th>Subscribed</th>
-                            <th>AI Queries</th>
-                            <th>Actions</th>
+                            <th>Telegram ID</th><th>Name</th><th>Last Active</th>
+                            <th>Subscribed</th><th>AI Msgs</th><th>Cmds</th><th>Top Action</th><th>Logs</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {rows}
-                    </tbody>
+                    <tbody>{user_rows}</tbody>
                 </table>
             </div>
-            
-            <!-- jQuery and DataTables JS -->
-            <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-            <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-            <script>
-                $(document).ready(function() {{
-                    $('#usersTable').DataTable({{
-                        "pageLength": 25,
-                        "order": [[ 3, "desc" ]] // Automatically sort by highest AI queries first
-                    }});
-                }});
-            </script>
-        </body>
+        </div>
+        <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+        <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+        <script>
+            $(document).ready(function(){{
+                $('#usersTable').DataTable({{pageLength:25,order:[[4,"desc"]]}});
+            }});
+        </script>
+    </body>
     </html>
     """
 
