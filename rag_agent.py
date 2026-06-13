@@ -281,12 +281,13 @@ class RAGAgent:
         import main
         vector_store = main.global_vector_store
         
+        processed_query = preprocess_search_query(query)
         if not vector_store or not vector_store.embeddings:
             logger.warning("Vector store not initialized, falling back to keyword search")
-            return await self.search_products(query, limit)
+            return await self.search_products(processed_query, limit)
             
-        logger.info("RAG semantic search for: %s", query)
-        results = await vector_store.search_products(query, top_k=limit)
+        logger.info("RAG semantic search. Original: %s -> Processed: %s", query, processed_query)
+        results = await vector_store.search_products(processed_query, top_k=limit)
         products = [res["product"] for res in results]
             
         # Format for LLM
