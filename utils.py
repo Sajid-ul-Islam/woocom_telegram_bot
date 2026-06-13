@@ -126,9 +126,8 @@ async def get_pathao_tracking_status(consignment_id):
             return None
 
         async with httpx.AsyncClient(timeout=4.0) as client:
-            token = pathao_token_cache.get("auth_token")
-            if not token:
-                logger.info("Pathao auth token not cached. Requesting a new one.")
+            async def _get_token():
+                """Request a fresh Pathao auth token."""
                 token_resp = await client.post(f"{base_url}/aladdin/api/v1/issue-token", json={
                     "client_id": client_id,
                     "client_secret": client_secret,
@@ -138,20 +137,38 @@ async def get_pathao_tracking_status(consignment_id):
                 })
                 if token_resp.status_code != 200:
                     return None
-                token = token_resp.json().get("access_token")
-                if token:
-                    pathao_token_cache.set("auth_token", token)
+                new_token = token_resp.json().get("access_token")
+                if new_token:
+                    pathao_token_cache.set("auth_token", new_token)
+                return new_token
+
+            token = pathao_token_cache.get("auth_token")
+            if not token:
+                logger.info("Pathao auth token not cached. Requesting a new one.")
+                token = await _get_token()
 
             if not token:
                 return None
 
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            async def _do_track(tkn):
+                headers = {"Authorization": f"Bearer {tkn}", "Accept": "application/json"}
+                return await client.get(
+                    f"{base_url}/aladdin/api/v1/packages/{consignment_id}/track",
+                    headers=headers
+                )
 
-            track_resp = await client.get(f"{base_url}/aladdin/api/v1/packages/{consignment_id}/track", headers=headers)
+            track_resp = await _do_track(token)
+
+            # On 401, clear stale token and retry once with a fresh one
+            if track_resp.status_code == 401:
+                logger.warning("Pathao token 401 — refreshing and retrying...")
+                pathao_token_cache.store.pop("auth_token", None)
+                token = await _get_token()
+                if not token:
+                    return None
+                track_resp = await _do_track(token)
+
             if track_resp.status_code != 200:
-                if track_resp.status_code == 401:
-                    logger.warning("Pathao token returned 401 Unauthorized, clearing cached token.")
-                    pathao_token_cache.store.pop("auth_token", None)
                 return None
 
             data = track_resp.json()

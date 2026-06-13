@@ -398,6 +398,16 @@ class RAGAgent:
 
             logger.info("Trying AI provider '%s' (model: %s)...", provider_name, model_name)
 
+            # Trim history to last 20 messages to prevent context window overflow
+            MAX_HISTORY = 20
+            if len(self.conversation_history) > MAX_HISTORY:
+                logger.info(
+                    "Trimming conversation history from %d to %d messages.",
+                    len(self.conversation_history), MAX_HISTORY
+                )
+                self.conversation_history = self.conversation_history[-MAX_HISTORY:]
+                history_backup = list(self.conversation_history)
+
             # Clear extra buttons before each provider attempt in case of partial executions
             self.extra_buttons = []
 
@@ -726,9 +736,26 @@ class RAGAgent:
                 })
 
             # Add assistant response and tool results to history
+            # Serialize Anthropic SDK content blocks to plain dicts for JSON-safe storage
+            serialized_content = []
+            for block in response.content:
+                if hasattr(block, "type"):
+                    block_dict = {"type": block.type}
+                    if hasattr(block, "text"):
+                        block_dict["text"] = block.text
+                    if hasattr(block, "id"):
+                        block_dict["id"] = block.id
+                    if hasattr(block, "name"):
+                        block_dict["name"] = block.name
+                    if hasattr(block, "input"):
+                        block_dict["input"] = block.input
+                    serialized_content.append(block_dict)
+                else:
+                    serialized_content.append(str(block))
+
             self.conversation_history.append({
                 "role": "assistant",
-                "content": response.content
+                "content": serialized_content
             })
 
             self.conversation_history.append({
@@ -750,6 +777,9 @@ class RAGAgent:
         for block in response.content:
             if hasattr(block, "text"):
                 final_response += block.text
+
+        if not final_response.strip():
+            raise ValueError("Anthropic returned an empty response (no text blocks in final message).")
 
         # Add assistant response to history
         self.conversation_history.append({
@@ -1007,7 +1037,10 @@ class RAGAgent:
             assistant_msg = response.choices[0].message
 
         # Final response
-        final_response = assistant_msg.content or ""
+        final_response = (assistant_msg.content or "").strip()
+        if not final_response:
+            raise ValueError("OpenAI-compatible provider returned an empty response (no content in final message).")
+
         self.conversation_history.append({
             "role": "assistant",
             "content": final_response

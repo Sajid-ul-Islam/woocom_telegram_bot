@@ -299,7 +299,21 @@ async def get_order_by_id(order_id):
 
 
 # Store agents per user (so each user has their own conversation)
-user_agents = {}
+# Includes last-access timestamp for TTL-based memory cleanup
+user_agents = {}          # { user_id: RAGAgent }
+user_agents_last_used = {}  # { user_id: float (epoch) }
+
+USER_AGENT_TTL = 3600  # Evict agents unused for 1 hour
+
+def _evict_stale_agents():
+    """Remove in-memory agents that haven't been used recently."""
+    now = time.time()
+    stale = [uid for uid, ts in user_agents_last_used.items() if now - ts > USER_AGENT_TTL]
+    for uid in stale:
+        user_agents.pop(uid, None)
+        user_agents_last_used.pop(uid, None)
+    if stale:
+        logger.info("Evicted %d stale user agents from memory.", len(stale))
 
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, direct_message: str = None):
@@ -323,6 +337,9 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, di
     if not user_message:
         return
 
+    # Evict stale agents periodically (runs every message, cheap O(n) scan)
+    _evict_stale_agents()
+
     # Create agent for user if doesn't exist
     if user_id not in user_agents:
         user_agents[user_id] = RAGAgent(
@@ -331,6 +348,7 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, di
             woocommerce_secret=WOOCOMMERCE_SECRET,
             user_id=user_id
         )
+    user_agents_last_used[user_id] = time.time()
 
     # Show typing indicator
     await context.bot.send_chat_action(
@@ -392,10 +410,28 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, di
 
     except Exception as e:
         logger.error("AI chat error: %s", str(e))
-        keyboard = [[InlineKeyboardButton("🔄 Try Again", callback_data="retry_ai_chat")]]
+        text = (
+            "🤖 *Oops! The AI Assistant is temporarily unavailable.*\n\n"
+            "Don't worry, you can still browse or query our store manually! Please choose one of the options below or use these commands:\n"
+            "• /browse - Browse clothing categories\n"
+            "• /search - Search for specific products\n"
+            "• /my\\_order - Securely track your order\n"
+            "• /help - Support FAQs & contact info"
+        )
+        keyboard = [
+            [InlineKeyboardButton("👔 Browse Categories", callback_data="browse")],
+            [InlineKeyboardButton("🔍 Search Products", callback_data="search")],
+            [InlineKeyboardButton("📦 My Order", callback_data="my_order")],
+            [InlineKeyboardButton("📞 FAQ & Support", callback_data="help_menu")],
+            [
+                InlineKeyboardButton("🔄 Try Again", callback_data="retry_ai_chat"),
+                InlineKeyboardButton("← Back to Menu", callback_data="start_menu")
+            ]
+        ]
         await update.effective_message.reply_text(
-            "❌ Error processing your request. Please try again.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
         )
 
 
@@ -452,6 +488,9 @@ async def reset_ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if user_id in user_agents:
         user_agents[user_id].conversation_history = []
+    # Also clear persisted history in Supabase so it doesn't reload on next message
+    from db import update_user_history
+    update_user_history(user_id, [])
 
     text = (
         "🗑️ *AI Chat Reset Successful!*\n\n"
@@ -1011,6 +1050,9 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Route normal text messages to conversational AI
+    # Skip very short messages (e.g. "ok", "k") to avoid unnecessary API calls
+    if len(user_text.strip()) < 3:
+        return
     await ai_chat_handler(update, context)
 
 
@@ -1094,7 +1136,7 @@ async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🟢 *WhatsApp*: `+8801752700500`\n"
             "📞 *Hotline*: `+8809612345678` (10:00 AM - 8:00 PM)\n"
             "✉️ *Email*: `support@deencommerce.com`\n\n"
-            f"📍 *Store Address*: {md(address)}"
+            f"📍 *Our Outlets:*\n{address}"  # address is trusted hardcoded text, no md() escaping needed
         )
     else:
         text = "Topic not found."
@@ -1557,9 +1599,28 @@ async def admin_chat_logs(user_id: int, request: Request):
     </html>
     """
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"status": "Telegram bot running", "bot": "DeenCommerce"}
+    return """
+    <html>
+        <head>
+            <title>DeenCommerce Bot</title>
+            <meta http-equiv="refresh" content="0; url=/admin/login">
+            <style>
+                body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
+                       align-items: center; height: 100vh; margin: 0; background: #f4f4f9; }
+                .box { text-align: center; }
+                a { color: #007bff; }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>🤖 DeenCommerce Bot is Running</h2>
+                <p>Redirecting to <a href="/admin/login">Admin Dashboard</a>…</p>
+            </div>
+        </body>
+    </html>
+    """
 
 
 if __name__ == "__main__":
