@@ -99,7 +99,7 @@ async def update_knowledge_base_daily():
         kb, docs = await setup_knowledge_base(WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET, "woo_knowledge_base.json")
         global global_vector_store
         if global_vector_store:
-            global_vector_store.create_from_knowledge_base("woo_knowledge_base.json")
+            await asyncio.to_thread(global_vector_store.create_from_knowledge_base, "woo_knowledge_base.json")
         logger.info("Knowledge base and embeddings updated successfully.")
     except Exception as e:
         logger.error("Error updating knowledge base: %s", str(e))
@@ -138,7 +138,7 @@ async def lifespan(fastapi_app: FastAPI):
             if not os.path.exists("woo_knowledge_base.json"):
                 logger.info("Initial run: Fetching WooCommerce data and generating new embeddings for Supabase...")
                 await setup_knowledge_base(WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET, "woo_knowledge_base.json")
-                global_vector_store.create_from_knowledge_base("woo_knowledge_base.json")
+                await asyncio.to_thread(global_vector_store.create_from_knowledge_base, "woo_knowledge_base.json")
             else:
                 logger.info("VectorStore initialized with Supabase integration.")
         except Exception as e:

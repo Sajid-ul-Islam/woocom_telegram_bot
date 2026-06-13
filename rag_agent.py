@@ -286,7 +286,7 @@ class RAGAgent:
             return await self.search_products(query, limit)
             
         logger.info("RAG semantic search for: %s", query)
-        results = vector_store.search_products(query, top_k=limit)
+        results = await vector_store.search_products(query, top_k=limit)
         products = [res["product"] for res in results]
             
         # Format for LLM
@@ -325,7 +325,7 @@ class RAGAgent:
             return []
             
         logger.info("RAG semantic search for pages: %s", query)
-        results = vector_store.search_pages(query, top_k=limit)
+        results = await vector_store.search_pages(query, top_k=limit)
         
         # Format for LLM
         formatted = []

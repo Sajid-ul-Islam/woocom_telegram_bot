@@ -3,6 +3,7 @@
 import json
 from typing import List, Dict
 from sentence_transformers import SentenceTransformer
+import asyncio
 from db import supabase
 import logging
 
@@ -80,64 +81,70 @@ SKU: {product['sku']}
                         logger.error(f"  ❌ Failed to upload page batch: {e}")
             logger.info("✅ Page embeddings saved!")
     
-    def search_products(self, query: str, top_k: int = 5) -> List[Dict]:
+    async def search_products(self, query: str, top_k: int = 5) -> List[Dict]:
         """Search products using semantic similarity via Supabase pgvector"""
         if not self.has_connection:
             return []
             
-        query_embedding = self.model.encode(query, convert_to_tensor=False).tolist()
-        
-        try:
-            response = supabase.rpc(
-                "match_products",
-                {
-                    "query_embedding": query_embedding,
-                    "match_threshold": 0.2,
-                    "match_count": top_k
-                }
-            ).execute()
+        def _search():
+            query_embedding = self.model.encode(query, convert_to_tensor=False).tolist()
             
-            results = []
-            if response.data:
-                for row in response.data:
-                    results.append({
-                        "product": row["metadata"],
-                        "similarity_score": row["similarity"],
-                        "search_text": row["content"][:500]
-                    })
-            return results
-        except Exception as e:
-            logger.error(f"❌ Supabase semantic product search error: {e}")
-            return []
+            try:
+                response = supabase.rpc(
+                    "match_products",
+                    {
+                        "query_embedding": query_embedding,
+                        "match_threshold": 0.2,
+                        "match_count": top_k
+                    }
+                ).execute()
+                
+                results = []
+                if response.data:
+                    for row in response.data:
+                        results.append({
+                            "product": row["metadata"],
+                            "similarity_score": row["similarity"],
+                            "search_text": row["content"][:500]
+                        })
+                return results
+            except Exception as e:
+                logger.error(f"❌ Supabase semantic product search error: {e}")
+                return []
+                
+        return await asyncio.to_thread(_search)
 
-    def search_pages(self, query: str, top_k: int = 3) -> List[Dict]:
+    async def search_pages(self, query: str, top_k: int = 3) -> List[Dict]:
         """Search store pages/policies using semantic similarity via Supabase pgvector"""
         if not self.has_connection:
             return []
             
-        query_embedding = self.model.encode(query, convert_to_tensor=False).tolist()
-        
-        try:
-            response = supabase.rpc(
-                "match_pages",
-                {
-                    "query_embedding": query_embedding,
-                    "match_threshold": 0.2,
-                    "match_count": top_k
-                }
-            ).execute()
+        def _search():
+            query_embedding = self.model.encode(query, convert_to_tensor=False).tolist()
             
-            results = []
-            if response.data:
-                for row in response.data:
-                    results.append({
-                        "id": row["id"],
-                        "title": row["title"],
-                        "content": row["content"],
-                        "link": row["link"],
-                        "similarity_score": row["similarity"]
-                    })
-            return results
-        except Exception as e:
-            logger.error(f"❌ Supabase semantic page search error: {e}")
-            return []
+            try:
+                response = supabase.rpc(
+                    "match_pages",
+                    {
+                        "query_embedding": query_embedding,
+                        "match_threshold": 0.2,
+                        "match_count": top_k
+                    }
+                ).execute()
+                
+                results = []
+                if response.data:
+                    for row in response.data:
+                        results.append({
+                            "id": row["id"],
+                            "title": row["title"],
+                            "content": row["content"],
+                            "link": row["link"],
+                            "similarity_score": row["similarity"]
+                        })
+                return results
+            except Exception as e:
+                logger.error(f"❌ Supabase semantic page search error: {e}")
+                return []
+                
+        return await asyncio.to_thread(_search)
