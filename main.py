@@ -404,8 +404,19 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, di
         cart = context.user_data.get("cart", [])
 
         # Process message with RAG agent
-        response, extra_buttons = await user_agents[user_id].process_message(user_message, user_id, cart=cart)
+        response, extra_buttons, extra_images = await user_agents[user_id].process_message(user_message, user_id, cart=cart)
         _track(user_id, "ai_chat")
+
+        # Send any queued images first
+        if extra_images:
+            for img_url in extra_images:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=img_url
+                    )
+                except Exception as e:
+                    logger.warning("Could not send AI photo %s: %s", img_url, str(e))
 
         # Attach continuous chat options and extra buttons to the final response
         keyboard = []

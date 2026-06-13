@@ -69,6 +69,7 @@ Language & Response Style:
 - Use emojis to make responses engaging.
 - Always mention prices in ৳ (Taka).
 - If a product is on sale (has sale_price), calculate the discount percentage and savings. Mention the discount in Bengali like: "২০% ছাড়ে আপনি পাচ্ছেন এত টাকায়, সাশ্রয় হচ্ছে এত টাকা". When displaying the price in your list, use the 'formatted_price' field exactly as provided to show the crossed-out regular price and current sale price (e.g. ৳3̶4̶9̶ ৳279).
+- If you want to send pictures of items to the customer, include their image URLs in your response on a new line formatted EXACTLY like this: `[Image: https://example.com/image.jpg]`. You can include multiple tags to send multiple pictures. Do not use standard Markdown image tags like `![alt](url)`.
 
 Bengali Query Handling:
 - Customers may search in Bengali (e.g. "সুতির কাপড় আছে?", "কালো পাঞ্জাবি", "জিন্স আছে?"). Understand and translate these naturally.
@@ -337,10 +338,11 @@ class RAGAgent:
             for p in products[:5]
         ]
 
-    async def process_message(self, user_message: str, user_id: int = None, cart: list = None) -> tuple[str, list]:
+    async def process_message(self, user_message: str, user_id: int = None, cart: list = None) -> tuple[str, list, list]:
         """Process a user message using ReAct loop"""
         self.cart = cart or []
         self.extra_buttons = []
+        self.extra_images = []
         if user_id is not None and not self.conversation_history:
             self.conversation_history = get_user_history(user_id)
 
@@ -435,7 +437,23 @@ class RAGAgent:
                 logger.info("Successfully processed message using AI provider '%s'.", provider_name)
                 if self.user_id:
                     update_user_history(self.user_id, self.conversation_history)
-                return response, self.extra_buttons
+                
+                # Parse out [Image: URL] tags
+                clean_lines = []
+                import re
+                for line in response.split("\n"):
+                    match = re.search(r"\[Image:\s*(http[s]?://[^\s\]]+)\]", line)
+                    if match:
+                        self.extra_images.append(match.group(1))
+                        # Remove the tag from the line
+                        line = re.sub(r"\[Image:\s*http[s]?://[^\s\]]+\]", "", line).strip()
+                        if line:
+                            clean_lines.append(line)
+                    else:
+                        clean_lines.append(line)
+                
+                response = "\n".join(clean_lines).strip()
+                return response, self.extra_buttons, self.extra_images
             except Exception as e:
                 logger.error("AI provider '%s' failed: %s", provider_name, str(e))
                 last_error = e
