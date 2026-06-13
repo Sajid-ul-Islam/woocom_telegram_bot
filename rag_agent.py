@@ -27,15 +27,17 @@ from utils import (
     md,
     html_table_to_markdown,
     extract_and_format_size_chart,
+    extract_bengali_order_context,
+    bn_to_arabic,
 )
 from db import get_user_history, update_user_history
 
 
-SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DeenCommerce,
+SYSTEM_PROMPT = """You are an intelligent fashion shopping assistant for DEEN Commerce,
 a Bangladeshi e-commerce store selling clothing and fashion items on deencommerce.com.
 
 You must ALWAYS talk and respond ONLY in the context of deencommerce.com and its products, categories, orders, policies, and services.
-If the customer asks or talks about anything unrelated to deencommerce.com (such as general knowledge, other websites, coding, general questions, or non-DeenCommerce items/topics), you must politely decline to answer, inform them that you are the DeenCommerce shopping assistant, and redirect them back to deencommerce.com products, clothing items, or order inquiries.
+If the customer asks or talks about anything unrelated to deencommerce.com (such as general knowledge, other websites, coding, general questions, or non-DEEN Commerce items/topics), you must politely decline to answer, inform them that you are the DEEN Commerce shopping assistant, and redirect them back to deencommerce.com products, clothing items, or order inquiries.
 
 You have access to tools to:
 1. Search products by keyword or category
@@ -59,10 +61,38 @@ Security & Order Tracking:
 
 Language & Response Style:
 - Understand and reply in the user's preferred language, including English, Bangla (Bengali), and Banglish (Bengali written in Latin script).
+- When a customer writes in Bengali, respond in Bengali.
 - Keep responses extremely to-the-point, concise, and direct without unnecessary fluff.
 - Be concise in Telegram (max 1000 characters per message).
 - Use emojis to make responses engaging.
 - Always mention prices in ৳ (Taka).
+
+Bengali Query Handling:
+- Customers may search in Bengali (e.g. "সুতির কাপড় আছে?", "কালো পাঞ্জাবি", "জিন্স আছে?"). Understand and translate these naturally.
+- Colors in Bengali: লাল=red, নীল=blue, সবুজ=green, কালো=black, সাদা=white, কমলা=orange, হলুদ=yellow, গোলাপি=pink, বেগুনি=purple, ধূসর=gray.
+- Fabrics in Bengali: সুতি/সুতীর=cotton, লিনেন=linen, সিল্ক/রেশম=silk, ডেনিম=denim.
+- Clothing in Bengali: গেঞ্জি=t-shirt, শার্ট=shirt, পাঞ্জাবি=panjabi, প্যান্ট=pants, জিন্স=jeans, পোলো=polo, হুডি=hoodie.
+
+Bengali Order-Placement Handling:
+- Customers may send a combined message with product + size + their name + address + phone, all in one block (in Bengali or mixed). For example:
+  "এই দুইটা পাঞ্জাবী ৪৮ সাইজ অর্ডার করতে চাচ্ছি শাহীন আলম ঝাউলাহাটি চৌরাস্তা ঢাকা 01614225311"
+- When you receive a [PARSED ORDER CONTEXT] block with `Order Placement Intent`, use that structured data directly.
+- ALWAYS search for the requested product first using the search_products tool to confirm availability and price.
+- Then respond with a friendly order summary in Bengali showing:
+  ✅ Product name + price
+  📦 Quantity & Size
+  👤 Customer name
+  📍 Delivery address
+  📞 Phone number(s)
+- Ask them to confirm, then guide them to complete the order on the website (provide permalink) or via the checkout button.
+- If size or quantity is missing, ask for it before confirming.
+- NEVER place an order without confirming details with the customer first.
+
+Bengali Order-Status Handling:
+- Customers may ask about their order delivery status in Bengali. For example:
+  "আমি একটি পাঞ্জাবি অডার করেছিলাম ১১/০৬/২০২৬ অর্ডার নাম্বার -২০০৮৬৫ কতদিন পর ডেলিভারি হবে? আমার মোবাইল নাম্বার -০১৭০৩৫২২৫৫৪"
+- When you receive a [PARSED ORDER CONTEXT] block with `Order Status Intent`, use the extracted Order ID and Phone/Email to IMMEDIATELY call the `order_lookup` tool.
+- Provide the status to the customer in a friendly Bengali response based on the `order_lookup` result.
 
 Telegram Bot Context:
 You operate inside a Telegram bot. The user can also use the following slash commands:
@@ -80,7 +110,7 @@ CRITICAL: If a requested product is 'Out of Stock', you MUST automatically trigg
 When recommending or listing products, always include their website link (permalink) so the customer can easily view/buy them on the website.
 
 When a customer asks a question:
-1. Understand their intent (searching, browsing, recommendation, etc.)
+1. Understand their intent (searching, browsing, recommendation, order placement, etc.)
 2. Decide which tools to use
 3. Retrieve relevant information from our database
 4. Provide a helpful, conversational response
@@ -301,18 +331,53 @@ class RAGAgent:
         self.extra_buttons = []
         if user_id is not None and not self.conversation_history:
             self.conversation_history = get_user_history(user_id)
+
+        # --- Bengali order-intent detection ---
+        # Parse the raw message for structured order data and prepend a context
+        # block so the AI can immediately reason about it without extra turns.
+        _ascii_msg = bn_to_arabic(user_message)
+        _ctx = extract_bengali_order_context(_ascii_msg)
+        if _ctx["is_order_intent"] or _ctx["is_status_intent"]:
+            ctx_lines = ["[PARSED ORDER CONTEXT]"]
+            if _ctx["is_status_intent"]:
+                ctx_lines.append("  Intent: Order Status Tracking")
+            elif _ctx["is_order_intent"]:
+                ctx_lines.append("  Intent: Order Placement")
+
+            if _ctx["order_id"]:
+                ctx_lines.append(f"  Order ID: {_ctx['order_id']}")
+            if _ctx["product"]:
+                ctx_lines.append(f"  Product: {_ctx['product']}")
+            if _ctx["quantity"]:
+                ctx_lines.append(f"  Quantity: {_ctx['quantity']}")
+            if _ctx["size"]:
+                ctx_lines.append(f"  Size: {_ctx['size']}")
+            if _ctx["name"]:
+                ctx_lines.append(f"  Customer name: {_ctx['name']}")
+            if _ctx["address"]:
+                ctx_lines.append(f"  Delivery address: {_ctx['address']}")
+            if _ctx["phones"]:
+                ctx_lines.append(f"  Phone(s): {', '.join(_ctx['phones'])}")
+            if _ctx["emails"]:
+                ctx_lines.append(f"  Email(s): {', '.join(_ctx['emails'])}")
+            ctx_lines.append("[END CONTEXT]")
+            augmented_message = "\n".join(ctx_lines) + "\n\n" + user_message
+        else:
+            augmented_message = user_message
+        # Use the augmented message for AI processing, keep original for history
+        internal_message = augmented_message
             
         store_address = await get_store_address()
         dynamic_system_prompt = (
             SYSTEM_PROMPT +
-            f"\n\n[STORE ADDRESS]\nThe physical outlet addresses for DeenCommerce are:\n{store_address}\n\n"
+            f"\n\n[STORE ADDRESS]\nThe physical outlet addresses for DEEN Commerce are:\n{store_address}\n\n"
             f"[OUTLET INSTRUCTIONS]\n"
             f"- If a customer asks for a specific outlet's address (e.g., Mirpur, Wari, Cumilla, or Sylhet), provide ONLY that specific outlet's details (address, phone, hours, and map link), NOT all of them.\n"
             f"- If a customer asks for outlets in Dhaka, provide ONLY the Mirpur and Wari outlets' details.\n"
             f"- If they ask generally about your store locations, outlets, or where they can visit, list all 4 outlets."
         )
 
-        messages = self.conversation_history + [{"role": "user", "content": user_message}]
+        messages = self.conversation_history + [{"role": "user", "content": internal_message}]
 
         if not self.providers_chain:
             raise RuntimeError("No valid AI providers configured in environment variables.")
@@ -320,7 +385,8 @@ class RAGAgent:
         # Save a backup of conversation history before this processing run
         history_backup = list(self.conversation_history)
 
-        # Append user message once
+        # Append the ORIGINAL user message to history (not the augmented context block)
+        # so that stored conversation stays clean and human-readable.
         self.conversation_history.append({
             "role": "user",
             "content": user_message

@@ -244,21 +244,219 @@ SYNONYMS_MAP = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Bengali numeral → Arabic digit map
+# ---------------------------------------------------------------------------
+_BN_DIGIT = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+
+# Quantity / count words in Bengali → integer strings
+_QUANTITY_WORDS: dict[str, str] = {
+    "একটা": "1", "একটি": "1", "এক": "1",
+    "দুইটা": "2", "দুটো": "2", "দুইটি": "2", "দুটি": "2", "দুই": "2", "দুটা": "2",
+    "তিনটা": "3", "তিনটি": "3", "তিন": "3",
+    "চারটা": "4", "চারটি": "4", "চার": "4",
+    "পাঁচটা": "5", "পাঁচটি": "5", "পাঁচ": "5",
+    "ছয়টা": "6", "ছয়টি": "6", "ছয়": "6",
+    "সাতটা": "7", "সাতটি": "7", "সাত": "7",
+    "আটটা": "8", "আটটি": "8", "আট": "8",
+    "নয়টা": "9", "নয়টি": "9", "নয়": "9",
+    "দশটা": "10", "দশটি": "10", "দশ": "10",
+}
+
+# Intent / action keywords that signal an order placement attempt
+_ORDER_INTENT_WORDS = {
+    "অর্ডার", "অর্ডার করতে", "কিনতে", "কিনব", "নিতে চাই", "নিতে চাচ্ছি",
+    "order", "buy", "purchase",
+    "অর্ডার করতে চাচ্ছি", "অর্ডার করতে চাই", "অর্ডার দিতে চাই",
+}
+
+# Intent / action keywords for order STATUS tracking
+_ORDER_STATUS_INTENT_WORDS = {
+    "স্ট্যাটাস", "অবস্থা", "ডেলিভারি", "কবে পাব", "কতদিন", "কোথায়",
+    "status", "track", "delivery", "track order",
+}
+
+
 def _normalize_bengali(text: str) -> str:
     """Normalize Bengali Unicode text.
 
-    Applies NFC normalization to collapse visually identical but differently
-    encoded sequences (e.g. ি U+09BF vs ী U+09C0 are *different* vowel signs
-    and intentionally kept distinct; NFC just ensures each is in its canonical
-    composed form so dictionary lookups are consistent).
-
-    Also strips zero-width joiners/non-joiners that can silently break matches.
+    - NFC normalization: collapses different Unicode sequences of the same
+      visual glyph (ি U+09BF, ী U+09C0, etc. are already distinct; NFC just
+      ensures each is in its single canonical form for reliable dict lookups).
+    - Strips invisible zero-width characters that silently break token matching.
     """
-    # Canonical decomposition then recomposition
     text = unicodedata.normalize("NFC", text)
-    # Remove zero-width characters that don't affect visual appearance
     text = re.sub(r"[\u200b-\u200f\u00ad]", "", text)
     return text
+
+
+def bn_to_arabic(text: str) -> str:
+    """Convert Bengali/Devanagari digits in *text* to ASCII digits."""
+    return text.translate(_BN_DIGIT)
+
+
+def extract_bengali_order_context(message: str) -> dict:
+    """Dynamically parse a natural-language Bengali/Banglish order message.
+
+    Returns a dict with keys (any can be None / empty if not found):
+        product   – str   e.g. "panjabi"
+        quantity  – str   e.g. "2"
+        size      – str   e.g. "48"
+        name      – str   customer name (heuristic)
+        address   – str   delivery address
+        phones    – list  all phone numbers found
+        emails    – list  all email addresses found
+        order_id  – str   e.g. "200865"
+        is_order_intent – bool
+        is_status_intent – bool
+    """
+    normalized = _normalize_bengali(message)
+    ascii_nums  = bn_to_arabic(normalized)   # replace Bengali digits
+
+    result: dict = {
+        "product": None,
+        "quantity": None,
+        "size": None,
+        "name": None,
+        "address": None,
+        "phones": [],
+        "emails": [],
+        "order_id": None,
+        "is_order_intent": False,
+        "is_status_intent": False,
+    }
+
+    lower = ascii_nums.strip().lower()
+
+    # ── 1. Detect intents ───────────────────────────────────────────────
+    for kw in _ORDER_INTENT_WORDS:
+        if kw in lower:
+            result["is_order_intent"] = True
+            break
+
+    for kw in _ORDER_STATUS_INTENT_WORDS:
+        if kw in lower:
+            result["is_status_intent"] = True
+            break
+
+    # ── 2. Extract phone numbers (BD format: 01x-xxxxxxxxx or similar) ──────
+    phones = re.findall(r"(?:(?:\+88)?0[1-9]\d{8,9})", ascii_nums)
+    # Also handle slash-separated doubles like 01614225311/01914225311
+    slash_phones = re.findall(r"((?:(?:\+88)?0[1-9]\d{8,9})/(?:(?:\+88)?0[1-9]\d{8,9}))", ascii_nums)
+    if slash_phones:
+        for pair in slash_phones:
+            for p in pair.split("/"):
+                if p not in phones:
+                    phones.append(p)
+        # Remove duplicates while keeping order
+        phones = list(dict.fromkeys(phones))
+    result["phones"] = phones
+
+    # Extract emails
+    emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", ascii_nums)
+    result["emails"] = list(dict.fromkeys(emails))
+
+    # ── 2.5 Extract Order ID ─────────────────────────────────────────────────
+    order_id_match = re.search(
+        r"(?:অর্ডার\s*(?:নাম্বার|নং|নম্বর)|order\s*(?:number|id|no\.?))\s*[:-]?\s*#?\s*(\d+)",
+        ascii_nums, re.IGNORECASE
+    )
+    if order_id_match:
+        result["order_id"] = order_id_match.group(1)
+        result["is_status_intent"] = True
+
+    # ── 3. Extract size ──────────────────────────────────────────────────────
+    # Look for digits preceded/followed by "সাইজ"/"size"/"s" (e.g. "৪৮ সাইজ", "size 48", "48s")
+    size_match = re.search(
+        r"(?:size\s*[:\-]?\s*)(\d+)|"
+        r"(\d+)\s*(?:সাইজ|size|s\b)|"
+        r"(?:সাইজ|size)\s*[:\-]?\s*(\d+)",
+        ascii_nums, re.IGNORECASE
+    )
+    if size_match:
+        result["size"] = next(g for g in size_match.groups() if g is not None)
+
+    # ── 4. Extract quantity ──────────────────────────────────────────────────
+    # a) Bengali quantity words
+    for bn_word, qty in _QUANTITY_WORDS.items():
+        if bn_word in normalized:
+            result["quantity"] = qty
+            break
+    # b) Numeric quantity patterns if no word match (e.g. "2টা", "x2", "× 2")
+    if not result["quantity"]:
+        qty_match = re.search(r"\b(\d+)\s*(?:টা|টি|pcs?|pieces?|x)\b", ascii_nums, re.IGNORECASE)
+        if qty_match:
+            result["quantity"] = qty_match.group(1)
+
+    # ── 5. Extract product name (from synonym map) ───────────────────────────
+    bn_lower = normalized.lower()
+    # Try multi-word phrases first (longest match)
+    for phrase in sorted(SYNONYMS_MAP, key=len, reverse=True):
+        if phrase and SYNONYMS_MAP[phrase] and phrase in bn_lower:
+            result["product"] = SYNONYMS_MAP[phrase]
+            break
+    # Fallback: Banglish / English product word in the original
+    if not result["product"]:
+        for phrase in sorted(SYNONYMS_MAP, key=len, reverse=True):
+            if phrase and SYNONYMS_MAP[phrase] and phrase in lower:
+                result["product"] = SYNONYMS_MAP[phrase]
+                break
+
+    # ── 6. Heuristic: extract name & address from the tail of the message ────
+    # Strategy: strip known structured parts (phones, size, qty keywords,
+    # product keywords, intent keywords) then what's left is likely name+address.
+    # Remove known structure so heuristic works on residue
+    residual = ascii_nums
+    for ph in result["phones"]:
+        residual = residual.replace(ph, " ")
+    for em in result["emails"]:
+        residual = residual.replace(em, " ")
+    if result["order_id"]:
+        residual = re.sub(
+            rf"(?:অর্ডার\s*(?:নাম্বার|নং|নম্বর)|order\s*(?:number|id|no\.?))\s*[:-]?\s*#?\s*{re.escape(result['order_id'])}",
+            " ", residual, flags=re.IGNORECASE
+        )
+    if result["size"]:
+        residual = re.sub(
+            rf"\b{re.escape(result['size'])}\s*(?:সাইজ|size|s\b)?", " ", residual, flags=re.IGNORECASE
+        )
+        residual = re.sub(
+            rf"(?:সাইজ|size)\s*[:\-]?\s*{re.escape(result['size'])}", " ", residual, flags=re.IGNORECASE
+        )
+    # Remove intent/action words
+    for kw in sorted(_ORDER_INTENT_WORDS, key=len, reverse=True):
+        residual = re.sub(re.escape(kw), " ", residual, flags=re.IGNORECASE)
+    # Remove product-related Bengali words from SYNONYMS_MAP
+    bn_residual_lower = _normalize_bengali(residual).lower()
+    for phrase in sorted(SYNONYMS_MAP, key=len, reverse=True):
+        if phrase and phrase in bn_residual_lower:
+            residual = re.sub(re.escape(phrase), " ", residual, flags=re.IGNORECASE)
+            bn_residual_lower = _normalize_bengali(residual).lower()
+    # Remove quantity words
+    for bn_word in _QUANTITY_WORDS:
+        residual = residual.replace(bn_word, " ")
+    # Remove Bengali stopwords / filler
+    for sw in ["এই", "ওই", "সেই", "এটা", "ওটা", "টা", "টি", "গুলো", "গুলা", "দিয়ে", "চাচ্ছি",
+               "চাই", "করতে", "করব", "পাঠান", "পাঠাবেন", "দেবেন", "দিন"]:
+        residual = residual.replace(sw, " ")
+    # Collapse whitespace and split on newlines/tabs for name vs address
+    parts = [p.strip() for p in re.split(r"[\n\r\t/]", residual) if p.strip()]
+    # Filter out fragments that are just punctuation or very short noise
+    parts = [p for p in parts if len(p) > 1 and not re.fullmatch(r"[\d\s,\.]+", p)]
+
+    if parts:
+        # First non-empty segment that looks like a person name (≤ 4 words, no digits)
+        for part in parts:
+            words = part.split()
+            if 1 <= len(words) <= 4 and not re.search(r"\d", part):
+                result["name"] = part
+                parts.remove(part)
+                break
+        # Remaining parts form the address
+        if parts:
+            result["address"] = ", ".join(parts)
+
+    return result
 
 
 def preprocess_search_query(query: str) -> str:
@@ -269,24 +467,34 @@ def preprocess_search_query(query: str) -> str:
     - Banglish (Bengali written in Latin script)
     - Bengali (Unicode) — normalised first, then token-by-token translation
 
+    For messages that look like order placements (contain phones, addresses,
+    names), only the product-related tokens are extracted so that noise like
+    phone numbers or street addresses don't pollute the WooCommerce search.
+
     Returns a single English search string suitable for the WooCommerce
     ``search`` query parameter.
     """
     if not query:
         return ""
 
-    # 1. Unicode normalise to make dictionary lookups reliable
+    # 1. Unicode normalise + Bengali digit conversion
     query = _normalize_bengali(query)
+    query_ascii = bn_to_arabic(query)  # Bengali digits → ASCII
 
-    # 2. Lowercase for case-insensitive matching
+    # 2. If this looks like an order-placement message, extract only the product
+    ctx = extract_bengali_order_context(query_ascii)
+    if ctx["is_order_intent"] and ctx["product"]:
+        return ctx["product"]
+
+    # 3. Lowercase for case-insensitive matching
     q_lower = query.strip().lower()
 
-    # 3. Whole-phrase match first (handles multi-word phrases like "সুতির কাপড়")
+    # 4. Whole-phrase match (handles multi-word phrases like "সুতির কাপড়")
     if q_lower in SYNONYMS_MAP:
         translated = SYNONYMS_MAP[q_lower]
         return translated if translated else q_lower
 
-    # 4. Tokenise on whitespace + common Bengali punctuation / question marks
+    # 5. Tokenise on whitespace + common Bengali punctuation / question marks
     tokens = re.split(r"[\s,।?!৷]+", q_lower)
 
     translated_tokens = []
@@ -298,12 +506,18 @@ def preprocess_search_query(query: str) -> str:
         if not token:
             continue
 
+        # Skip pure-numeric tokens (prices, phone numbers, sizes) and
+        # phone-like patterns so order messages don't produce noisy queries
+        ascii_token = bn_to_arabic(token)
+        if re.fullmatch(r"[\d/\-+]+", ascii_token):
+            continue
+
         # Try two-word phrase first (e.g. "সুতির কাপড়", "নেভি ব্লু")
         if i + 1 < len(tokens) and tokens[i + 1]:
             two_word = token + " " + tokens[i + 1]
             if two_word in SYNONYMS_MAP:
                 mapped = SYNONYMS_MAP[two_word]
-                if mapped:  # empty means stop-word
+                if mapped:
                     translated_tokens.append(mapped)
                 skip_next = True
                 continue
@@ -314,12 +528,11 @@ def preprocess_search_query(query: str) -> str:
             translated_tokens.append(mapped)
 
     if not translated_tokens:
-        # Fall back to original query if nothing translated
         return query.strip()
 
     # De-duplicate while preserving order
-    seen = set()
-    result = []
+    seen: set = set()
+    result: list = []
     for t in translated_tokens:
         if t not in seen:
             seen.add(t)
