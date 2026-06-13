@@ -199,7 +199,7 @@ def main_menu(first_name=None, cart_count=0):
 
 async def get_all_products(limit=20):
     """Fetch latest products from WooCommerce."""
-    return await woo_get(
+    products = await woo_get(
         "products",
         params={
             "per_page": limit,
@@ -209,6 +209,9 @@ async def get_all_products(limit=20):
             "stock_status": "instock",
         },
     )
+    if isinstance(products, list):
+        products = [p for p in products if p.get("status") == "publish"]
+    return products
 
 
 async def _has_published_products(category_id) -> bool:
@@ -249,7 +252,7 @@ async def get_categories(limit=100):
 
 async def get_products_by_category(category_id, page=1, limit=8):
     """Fetch published products from a category (all stock statuses shown with badge)."""
-    return await woo_get(
+    products = await woo_get(
         "products",
         params={
             "category": category_id,
@@ -260,11 +263,14 @@ async def get_products_by_category(category_id, page=1, limit=8):
             "status": "publish",  # Only published — never show drafts/private
         },
     )
+    if isinstance(products, list):
+        products = [p for p in products if p.get("status") == "publish"]
+    return products
 
 
 async def get_products_page(page=1, limit=8):
     """Fetch a page of latest products."""
-    return await woo_get(
+    products = await woo_get(
         "products",
         params={
             "page": page,
@@ -275,6 +281,9 @@ async def get_products_page(page=1, limit=8):
             "stock_status": "instock",
         },
     )
+    if isinstance(products, list):
+        products = [p for p in products if p.get("status") == "publish"]
+    return products
 
 
 async def get_product_by_id(product_id):
@@ -300,7 +309,7 @@ async def search_products(keyword):
     """Search products by keyword."""
     processed_keyword = preprocess_search_query(keyword)
     logger.info("Searching products. Original: %s -> Processed: %s", keyword, processed_keyword)
-    return await woo_get(
+    products = await woo_get(
         "products",
         params={
             "search": processed_keyword,
@@ -309,6 +318,9 @@ async def search_products(keyword):
             "stock_status": "instock",
         },
     )
+    if isinstance(products, list):
+        products = [p for p in products if p.get("status") == "publish"]
+    return products
 
 
 async def get_order_by_id(order_id):
@@ -810,6 +822,10 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if isinstance(product, dict) and "error" in product:
             await query.edit_message_text(text=f"❌ Error: {md(product['error'])}", parse_mode="Markdown")
+            return
+
+        if product.get("status") != "publish":
+            await query.edit_message_text(text="⚠️ *This product is not available.*", parse_mode="Markdown")
             return
 
         text = f"*{md(product.get('name', 'Product'))}*\n\n"
