@@ -841,3 +841,21 @@ async def woo_get(path, params=None):
     finally:
         if own_client and client_to_use:
             await client_to_use.aclose()
+
+
+def format_price_display(product: dict) -> str:
+    """Format price to handle regular vs sale price natively.
+    Returns:
+      '৳349' if not on sale.
+      '~৳349~ ৳279' using unicode strikethrough if on sale.
+    """
+    price = str(product.get("price", "")).strip()
+    regular_price = str(product.get("regular_price", "")).strip()
+    sale_price = str(product.get("sale_price", "")).strip()
+    on_sale = product.get("on_sale", False)
+    
+    if on_sale and regular_price and sale_price:
+        # Create unicode strikethrough
+        strikethrough_price = "".join(c + '\u0336' for c in regular_price)
+        return f"৳{strikethrough_price} ৳{sale_price}"
+    return f"৳{price}"

@@ -29,6 +29,7 @@ from utils import (
     extract_and_format_size_chart,
     extract_bengali_order_context,
     bn_to_arabic,
+    format_price_display,
 )
 from main import get_categories
 from db import get_user_history, update_user_history
@@ -67,6 +68,7 @@ Language & Response Style:
 - Be concise in Telegram (max 1000 characters per message).
 - Use emojis to make responses engaging.
 - Always mention prices in ৳ (Taka).
+- If a product is on sale (has sale_price), calculate the discount percentage and savings. Mention the discount in Bengali like: "২০% ছাড়ে আপনি পাচ্ছেন এত টাকায়, সাশ্রয় হচ্ছে এত টাকা". When displaying the price in your list, use the 'formatted_price' field exactly as provided to show the crossed-out regular price and current sale price (e.g. ৳3̶4̶9̶ ৳279).
 
 Bengali Query Handling:
 - Customers may search in Bengali (e.g. "সুতির কাপড় আছে?", "কালো পাঞ্জাবি", "জিন্স আছে?"). Understand and translate these naturally.
@@ -262,6 +264,9 @@ class RAGAgent:
                 "id": p["id"],
                 "name": p["name"],
                 "price": p["price"],
+                "regular_price": p.get("regular_price", ""),
+                "sale_price": p.get("sale_price", ""),
+                "formatted_price": format_price_display(p),
                 "description": p.get("description", "")[:200],
                 "stock": p.get("stock_quantity", "N/A"),
                 "image": p.get("images", [{}])[0].get("src", ""),
@@ -287,6 +292,9 @@ class RAGAgent:
             "id": p["id"],
             "name": p["name"],
             "price": p["price"],
+            "regular_price": p.get("regular_price", ""),
+            "sale_price": p.get("sale_price", ""),
+            "formatted_price": format_price_display(p),
             "description": p.get("description", ""),
             "short_description": p.get("short_description", ""),
             "size_chart": size_chart if size_chart else "No size chart available.",
@@ -320,6 +328,9 @@ class RAGAgent:
             {
                 "name": p["name"],
                 "price": p["price"],
+                "regular_price": p.get("regular_price", ""),
+                "sale_price": p.get("sale_price", ""),
+                "formatted_price": format_price_display(p),
                 "reason": f"Popular in {category or 'our store'}",
                 "permalink": p.get("permalink", "")
             }

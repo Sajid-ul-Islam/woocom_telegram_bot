@@ -81,7 +81,8 @@ from utils import (
     product_button_name,
     stock_display,
     woo_get,
-    get_store_address
+    get_store_address,
+    format_price_display
 )
 from rag_agent import RAGAgent
 from db import upsert_user, set_subscription, track_command
@@ -776,7 +777,7 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for product in products:
             text += f"*{md(product.get('name', 'Product'))}*\n"
-            text += f"💰 ৳{md(product.get('price', ''))}\n"
+            text += f"💰 {format_price_display(product)}\n"
             text += f"{stock_display(product)}\n\n"
 
             keyboard.append(
@@ -829,7 +830,7 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         text = f"*{md(product.get('name', 'Product'))}*\n\n"
-        text += f"💰 Price: ৳{md(product.get('price', ''))}\n"
+        text += f"💰 Price: {format_price_display(product)}\n"
         text += f"{stock_display(product)}\n\n"
 
         # Strip table before rendering text to avoid clutter
@@ -957,7 +958,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for product in products[:5]:
             text += f"*{md(product.get('name', 'Product'))}*\n"
-            text += f"💰 ৳{md(product.get('price', ''))}\n"
+            text += f"💰 {format_price_display(product)}\n"
             text += f"{stock_display(product)}\n\n"
 
             keyboard.append(
