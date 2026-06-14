@@ -1034,13 +1034,162 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {md(e)}", parse_mode="Markdown")
 
 
-async def my_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Prompt user for a single order lookup."""
+from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle shared contact for phone number."""
+    contact = update.effective_message.contact
+    if contact:
+        user_id = update.effective_user.id
+        phone = contact.phone_number
+        from db import upsert_user
+        upsert_user(user_id, update.effective_user.first_name, phone_number=phone)
+        
+        await update.message.reply_text("✅ Phone number saved!", reply_markup=ReplyKeyboardRemove())
+        await _fetch_and_show_orders_by_phone(update, context, phone)
+
+async def _render_and_send_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order: dict, order_id=None):
+    if not order_id:
+        order_id = order.get("id")
+    status = str(order.get("status", "")).upper()
+    total = order.get("total", "")
+    date_created = str(order.get("date_created", ""))[:10]
+    status_emoji = {
+        "PENDING": "⏳",
+        "PROCESSING": "🔄",
+        "ON-HOLD": "⏸️",
+        "COMPLETED": "✅",
+        "CANCELLED": "❌",
+        "REFUNDED": "🔄",
+        "FAILED": "❌",
+    }.get(status, "📦")
+
+    text = f"{status_emoji} *Order #{md(str(order_id))}*\n\n"
+    text += f"Status: {md(status)}\n"
+    text += f"Total: ৳{md(str(total))}\n"
+    text += f"Date: {md(date_created)}\n\n"
+
+    items = order.get("line_items", [])
+    if items:
+        text += "Items:\n"
+        for item in items:
+            text += f"  • {md(item.get('name', 'Item'))} (qty: {md(str(item.get('quantity', ''))})\n"
+
+    consignment_id, tracking_url = get_tracking_info(order)
+    if consignment_id and tracking_url:
+        text += f"\n🚚 *Courier Tracking*\n"
+        text += f"Tracking ID: `{md(consignment_id)}`\n"
+        if "pathao" in tracking_url.lower():
+            pathao_status = await get_pathao_tracking_status(consignment_id)
+            if pathao_status:
+                text += f"\n{pathao_status}"
+
+    keyboard = []
+    if consignment_id and tracking_url:
+        keyboard.append([InlineKeyboardButton("🌐 Track Package", url=tracking_url)])
+
+    keyboard.append([InlineKeyboardButton("← Back", callback_data="start_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.effective_message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def _fetch_and_show_orders_by_phone(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str):
+    search_phone = phone_number.replace("+", "")
+    orders = await woo_get("orders", params={"search": search_phone, "per_page": 5})
+    
+    if not isinstance(orders, list) or len(orders) == 0:
+        msg = "❌ We couldn't find any recent orders associated with your phone number.\nYou can still look up an order manually by typing:\n`1234 customer@example.com`"
+        if update.callback_query:
+            await update.callback_query.edit_message_text(msg, parse_mode="Markdown")
+        else:
+            await update.effective_message.reply_text(msg, parse_mode="Markdown")
+        context.user_data["waiting_for_order_lookup"] = True
+        return
+
+    text = "📦 *Your Recent Orders:*\n\n"
+    keyboard = []
+    for o in orders:
+        o_id = o.get("id")
+        status = o.get("status", "unknown").capitalize()
+        total = o.get("total")
+        currency = o.get("currency", "")
+        text += f"• Order #{o_id} - {status} ({total} {currency})\n"
+        keyboard.append([InlineKeyboardButton(f"View Order #{o_id}", callback_data=f"view_order_{o_id}")])
+    
+    keyboard.append([InlineKeyboardButton("← Back", callback_data="start_menu")])
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.effective_message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def view_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    _track(update.effective_user.id if update.effective_user else None, "my_order")
+    await query.answer()
+    order_id = query.data.replace("view_order_", "")
+    
+    user_id = update.effective_user.id
+    from db import supabase
+    phone_number = None
+    if supabase:
+        try:
+            resp = supabase.table("users").select("phone_number").eq("id", user_id).execute()
+            if resp.data and resp.data[0].get("phone_number"):
+                phone_number = resp.data[0]["phone_number"]
+        except: pass
+        
+    if not phone_number:
+        await query.edit_message_text("❌ Unauthorized. Phone number not verified.")
+        return
+        
+    order = await get_order_by_id(order_id)
+    if isinstance(order, dict) and "error" in order:
+        await query.edit_message_text("❌ Order not found.")
+        return
+        
+    billing_phone = re.sub(r"[^\d\+]", "", order.get("billing", {}).get("phone", ""))
+    clean_input_phone = re.sub(r"[^\d\+]", "", phone_number)
+    
+    is_match = False
+    if billing_phone and clean_input_phone and len(clean_input_phone) >= 10:
+        if billing_phone.endswith(clean_input_phone) or clean_input_phone.endswith(billing_phone):
+            is_match = True
+            
+    if not is_match:
+        await query.edit_message_text("❌ Unauthorized access to this order.")
+        return
+        
+    await _render_and_send_order(update, context, order, order_id)
+
+async def my_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompt user for a single order lookup or show recent if phone is known."""
+    query = update.callback_query
+    user_id = update.effective_user.id if update.effective_user else None
+    _track(user_id, "my_order")
+    
+    phone_number = None
+    from db import supabase
+    if supabase and user_id:
+        try:
+            resp = supabase.table("users").select("phone_number").eq("id", user_id).execute()
+            if resp.data and resp.data[0].get("phone_number"):
+                phone_number = resp.data[0]["phone_number"]
+        except:
+            pass
+
+    if phone_number:
+        if query:
+            await query.answer()
+        await _fetch_and_show_orders_by_phone(update, context, phone_number)
+        return
+
     text = (
         "📦 *View Your Order*\n\n"
-        "Enter your order number and billing email or phone in one message:\n"
+        "To easily see all your orders, please share your contact number using the button below.\n\n"
+        "Alternatively, enter your order number and billing email or phone in one message:\n"
         "`1234 customer@example.com`\n"
         "or\n"
         "`1234 01700000000`"
@@ -1049,18 +1198,25 @@ async def my_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_for_order_lookup"] = True
     context.user_data.pop("waiting_for_search", None)
 
+    reply_markup = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="📱 Share Phone Number", request_contact=True)]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+
     if query:
         await query.answer()
-        await query.edit_message_text(
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
             text=text,
             parse_mode="Markdown",
+            reply_markup=reply_markup
         )
     else:
         await update.effective_message.reply_text(
             text=text,
             parse_mode="Markdown",
+            reply_markup=reply_markup
         )
-
 
 def parse_order_lookup(user_text):
     if not user_text:
@@ -1069,7 +1225,6 @@ def parse_order_lookup(user_text):
     if not match:
         return None, None
     return match.group(1), match.group(2)
-
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for search or order lookup."""
@@ -1083,13 +1238,29 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("waiting_for_order_lookup"):
         order_id, contact_info = parse_order_lookup(user_text)
-        if not order_id:
+        
+        if not contact_info and user_text.strip().lstrip('#').isdigit():
+            order_id = user_text.strip().lstrip('#')
+            from db import supabase
+            phone_number = None
+            if supabase:
+                try:
+                    resp = supabase.table("users").select("phone_number").eq("id", update.effective_user.id).execute()
+                    if resp.data and resp.data[0].get("phone_number"):
+                        phone_number = resp.data[0]["phone_number"]
+                except:
+                    pass
+            if phone_number:
+                contact_info = phone_number
+
+        if not order_id or not contact_info:
             await update.message.reply_text(
                 "Please send the order number and billing email or phone like this:\n"
                 "`1234 customer@example.com`\n"
                 "or\n"
                 "`1234 01700000000`",
                 parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
             )
             return
 
@@ -1100,7 +1271,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order = await get_order_by_id(order_id)
 
             if isinstance(order, dict) and "error" in order:
-                await update.message.reply_text("❌ No matching order found.")
+                await update.message.reply_text("❌ No matching order found.", reply_markup=ReplyKeyboardRemove())
                 return
 
             billing_email = order.get("billing", {}).get("email", "").strip().lower()
@@ -1117,57 +1288,17 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     is_match = True
 
             if not is_match:
-                await update.message.reply_text("❌ No matching order found.")
+                await update.message.reply_text("❌ No matching order found.", reply_markup=ReplyKeyboardRemove())
                 return
 
-            status = str(order.get("status", "")).upper()
-            total = order.get("total", "")
-            date_created = str(order.get("date_created", ""))[:10]
-            status_emoji = {
-                "PENDING": "⏳",
-                "PROCESSING": "🔄",
-                "ON-HOLD": "⏸️",
-                "COMPLETED": "✅",
-                "CANCELLED": "❌",
-                "REFUNDED": "🔄",
-                "FAILED": "❌",
-            }.get(status, "📦")
-
-            text = f"{status_emoji} *Order #{md(order.get('id', order_id))}*\n\n"
-            text += f"Status: {md(status)}\n"
-            text += f"Total: ৳{md(total)}\n"
-            text += f"Date: {md(date_created)}\n\n"
-
-            items = order.get("line_items", [])
-            if items:
-                text += "Items:\n"
-                for item in items:
-                    text += f"  • {md(item.get('name', 'Item'))} (qty: {md(item.get('quantity', ''))})\n"
-
-            # Check tracking info
-            consignment_id, tracking_url = get_tracking_info(order)
-            if consignment_id and tracking_url:
-                text += f"\n🚚 *Courier Tracking*\n"
-                text += f"Tracking ID: `{md(consignment_id)}`\n"
-
-                # Fetch Pathao live status if available
-                if "pathao" in tracking_url.lower():
-                    pathao_status = await get_pathao_tracking_status(consignment_id)
-                    if pathao_status:
-                        text += f"\n{pathao_status}"
-
-            keyboard = []
-            if consignment_id and tracking_url:
-                keyboard.append([InlineKeyboardButton("🌐 Track Package", url=tracking_url)])
-
-            keyboard.append([InlineKeyboardButton("← Back", callback_data="start_menu")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+            await _render_and_send_order(update, context, order, order_id)
+            
+            msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=".", reply_markup=ReplyKeyboardRemove())
+            await msg.delete()
 
         except Exception as e:
             logger.error("Error fetching order: %s", str(e))
-            await update.message.reply_text("❌ Error fetching order.")
+            await update.message.reply_text("❌ Error fetching order.", reply_markup=ReplyKeyboardRemove())
         return
 
     # Route normal text messages to conversational AI
@@ -1430,6 +1561,8 @@ application.add_handler(CallbackQueryHandler(show_size_chart_handler, pattern="^
 application.add_handler(CallbackQueryHandler(start_menu, pattern="^start_menu$"))
 application.add_handler(CallbackQueryHandler(help_command, pattern="^help_menu$"))
 application.add_handler(CallbackQueryHandler(faq_handler, pattern="^faq_"))
+application.add_handler(CallbackQueryHandler(view_order_handler, pattern="^view_order_"))
+application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
 
 
@@ -1555,6 +1688,35 @@ async def toggle_provider(provider_name: str, request: Request):
     if provider_name in PROVIDER_HEALTH:
         PROVIDER_HEALTH[provider_name]["active"] = not PROVIDER_HEALTH[provider_name]["active"]
         
+    return RedirectResponse(url="/admin/dashboard", status_code=303)
+
+
+@app.post("/admin/add_provider")
+async def add_provider(request: Request):
+    """Add a custom AI provider."""
+    session_cookie = request.cookies.get("admin_session")
+    if session_cookie != TELEGRAM_WEBHOOK_SECRET:
+        return RedirectResponse(url="/admin/login", status_code=303)
+        
+    form = await request.form()
+    p_name = form.get("name", "").strip().lower().replace(" ", "_")
+    base_url = form.get("base_url", "").strip()
+    api_key = form.get("api_key", "").strip()
+    default_model = form.get("default_model", "").strip()
+    
+    if p_name and base_url and api_key:
+        from db import supabase
+        if supabase:
+            try:
+                supabase.table("ai_providers").upsert({
+                    "name": p_name,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "default_model": default_model
+                }).execute()
+            except Exception as e:
+                logger.error("Failed to add AI provider to Supabase: %s", str(e))
+            
     return RedirectResponse(url="/admin/dashboard", status_code=303)
 
 
@@ -1785,11 +1947,31 @@ async def admin_dashboard(request: Request):
             </div>
 
             <div class="card">
-                <h2>🤖 AI Provider Health & Status</h2>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h2 style="margin:0;">🤖 AI Provider Health & Status</h2>
+                    <button onclick="document.getElementById('add-provider-modal').style.display='flex'" style="background:#007bff;color:white;border:none;padding:8px 15px;border-radius:4px;cursor:pointer;font-weight:bold;">+ Add Custom Provider</button>
+                </div>
                 <table>
                     <thead><tr><th>Provider</th><th>Status</th><th>Last Error</th><th style="text-align:right">Action</th></tr></thead>
                     <tbody>{provider_rows_html}</tbody>
                 </table>
+            </div>
+
+            <!-- Modal -->
+            <div id="add-provider-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+                <div style="background:white; padding:30px; border-radius:8px; width:400px; max-width:90%;">
+                    <h2 style="margin-bottom:20px;">Add Custom AI Provider</h2>
+                    <form method="POST" action="/admin/add_provider">
+                        <input type="text" name="name" placeholder="Provider Name (e.g. together)" required style="width:100%; padding:10px; margin-bottom:15px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box;">
+                        <input type="url" name="base_url" placeholder="Base URL (e.g. https://api.together.xyz/v1)" required style="width:100%; padding:10px; margin-bottom:15px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box;">
+                        <input type="password" name="api_key" placeholder="API Key" required style="width:100%; padding:10px; margin-bottom:15px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box;">
+                        <input type="text" name="default_model" placeholder="Default Model (e.g. mistralai/Mixtral-8x7B)" style="width:100%; padding:10px; margin-bottom:20px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box;">
+                        <div style="display:flex; justify-content:space-between;">
+                            <button type="button" onclick="document.getElementById('add-provider-modal').style.display='none'" style="background:#6c757d; color:white; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold;">Cancel</button>
+                            <button type="submit" style="background:#28a745; color:white; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold;">Save Provider</button>
+                        </div>
+                    </form>
+                </div>
             </div>
 
             <div class="card">

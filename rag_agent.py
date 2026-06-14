@@ -179,6 +179,26 @@ def get_providers_chain(primary_provider_name=None):
         }
     }
 
+    try:
+        from db import supabase
+        if supabase:
+            resp = supabase.table("ai_providers").select("*").execute()
+            if resp.data:
+                for row in resp.data:
+                    cp_name = row["name"]
+                    if cp_name not in PROVIDER_HEALTH:
+                        PROVIDER_HEALTH[cp_name] = {"active": True, "status": "unknown", "last_error": ""}
+                    
+                    providers_info[cp_name] = {
+                        "key_vars": [],
+                        "type": "openai",
+                        "default_model": row.get("default_model", ""),
+                        "constructor": (lambda key, url=row.get("base_url"): ("openai", openai.AsyncOpenAI(api_key=key, base_url=url, timeout=10.0))),
+                        "api_key_override": row.get("api_key", "")
+                    }
+    except Exception as e:
+        logger.error("Failed to load custom providers from Supabase: %s", str(e))
+
     chain = []
 
     def is_valid_key(val):
@@ -188,6 +208,8 @@ def get_providers_chain(primary_provider_name=None):
         return not (val_lower.startswith("your_") or val_lower.endswith("_here") or "placeholder" in val_lower)
 
     def get_api_key(p_info):
+        if p_info.get("api_key_override"):
+            return p_info["api_key_override"]
         for kv in p_info.get("key_vars", []):
             val = os.getenv(kv)
             if is_valid_key(val):
@@ -213,6 +235,10 @@ def get_providers_chain(primary_provider_name=None):
 
     # Then add other valid fallback providers in cascade order
     fallback_order = ["openrouter", "groq", "openai", "anthropic", "xai", "gemini"]
+    for p_name in providers_info.keys():
+        if p_name not in fallback_order:
+            fallback_order.append(p_name)
+
     for p_name in fallback_order:
         is_same_as_primary = (
             (p_name == primary_provider_name) or

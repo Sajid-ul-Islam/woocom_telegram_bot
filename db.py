@@ -19,6 +19,7 @@ if url and key:
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT TRUE; "
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active TIMESTAMPTZ; "
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS command_counts JSONB DEFAULT '{}';"
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR;"
         )
         try:
             supabase.rpc("run_sql", {"query": _migration_sql}).execute()
