@@ -1570,6 +1570,7 @@ async def admin_dashboard(request: Request):
         return "<h1>Supabase not configured</h1>"
 
     # Fetch users — try with all tracking columns, fall back gracefully
+    migration_needed = False
     try:
         response = supabase.table("users").select(
             "id, first_name, is_subscribed, chat_history, command_counts, last_active"
@@ -1579,6 +1580,7 @@ async def admin_dashboard(request: Request):
         err_str = str(e)
         if "42703" in err_str or "command_counts" in err_str or "last_active" in err_str or "is_subscribed" in err_str:
             logger.warning("Tracking columns missing. Run the migration SQL in Supabase.")
+            migration_needed = True
             try:
                 response = supabase.table("users").select("id, first_name, chat_history").execute()
                 users = response.data or []
@@ -1701,7 +1703,7 @@ async def admin_dashboard(request: Request):
         user_rows += f"<tr><td>{u.get('id')}</td><td>{name}</td><td>{la}</td><td>{sub_badge}</td><td style='text-align:center'>{ai_q}</td><td style='text-align:center'>{total_cmds}</td><td style='text-align:center'>{top_label}</td><td>{logs_btn}</td></tr>"
 
     migration_warn = ""
-    if not any(u.get("command_counts") for u in users):
+    if migration_needed:
         migration_warn = """
         <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:14px 20px;margin-bottom:20px">
             ⚠️ <strong>Run this SQL in Supabase to enable command tracking:</strong><br>
