@@ -119,6 +119,16 @@ When a customer asks a question:
 4. Provide a helpful, conversational response
 """
 
+PROVIDER_HEALTH = {
+    "openrouter": {"active": True, "status": "unknown", "last_error": ""},
+    "groq": {"active": True, "status": "unknown", "last_error": ""},
+    "openai": {"active": True, "status": "unknown", "last_error": ""},
+    "anthropic": {"active": True, "status": "unknown", "last_error": ""},
+    "xai": {"active": True, "status": "unknown", "last_error": ""},
+    "grok": {"active": True, "status": "unknown", "last_error": ""},
+    "gemini": {"active": True, "status": "unknown", "last_error": ""},
+}
+
 def get_providers_chain(primary_provider_name=None):
     """Get a list of all configured and valid providers starting with the primary one."""
     if not primary_provider_name:
@@ -134,7 +144,7 @@ def get_providers_chain(primary_provider_name=None):
         "groq": {
             "key_vars": ["GROQ_API_KEY"],
             "type": "openai",
-            "default_model": "llama3-8b-8192",
+            "default_model": "llama-3.3-70b-versatile",
             "constructor": lambda key: ("openai", openai.AsyncOpenAI(api_key=key, base_url="https://api.groq.com/openai/v1", timeout=10.0))
         },
         "openai": {
@@ -152,19 +162,19 @@ def get_providers_chain(primary_provider_name=None):
         "xai": {
             "key_vars": ["XAI_API_KEY", "GROK_API_KEY"],
             "type": "openai",
-            "default_model": "grok-2-1212",
+            "default_model": "grok-2-latest",
             "constructor": lambda key: ("openai", openai.AsyncOpenAI(api_key=key, base_url="https://api.x.ai/v1", timeout=10.0))
         },
         "grok": {
             "key_vars": ["GROK_API_KEY", "XAI_API_KEY"],
             "type": "openai",
-            "default_model": "grok-2-1212",
+            "default_model": "grok-2-latest",
             "constructor": lambda key: ("openai", openai.AsyncOpenAI(api_key=key, base_url="https://api.x.ai/v1", timeout=10.0))
         },
         "gemini": {
             "key_vars": ["GEMINI_API_KEY"],
             "type": "openai",
-            "default_model": "gemini-1.5-flash",
+            "default_model": "gemini-2.5-flash",
             "constructor": lambda key: ("openai", openai.AsyncOpenAI(api_key=key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/", timeout=10.0))
         }
     }
@@ -186,7 +196,7 @@ def get_providers_chain(primary_provider_name=None):
 
     # First, add the primary provider if valid
     primary_info = providers_info.get(primary_provider_name)
-    if primary_info:
+    if primary_info and PROVIDER_HEALTH.get(primary_provider_name, {}).get("active", True):
         key = get_api_key(primary_info)
         if key:
             try:
@@ -210,6 +220,9 @@ def get_providers_chain(primary_provider_name=None):
             (p_name == "grok" and primary_provider_name == "xai")
         )
         if is_same_as_primary:
+            continue
+
+        if not PROVIDER_HEALTH.get(p_name, {}).get("active", True):
             continue
 
         p_info = providers_info[p_name]
@@ -497,6 +510,8 @@ class RAGAgent:
                     response = await self._process_openai(client, model_name, dynamic_system_prompt)
 
                 logger.info("Successfully processed message using AI provider '%s'.", provider_name)
+                PROVIDER_HEALTH[provider_name]["status"] = "ok"
+                PROVIDER_HEALTH[provider_name]["last_error"] = ""
                 if self.user_id:
                     update_user_history(self.user_id, self.conversation_history)
                 
@@ -518,6 +533,8 @@ class RAGAgent:
                 return response, self.extra_buttons, self.extra_images
             except Exception as e:
                 logger.error("AI provider '%s' failed: %s", provider_name, str(e))
+                PROVIDER_HEALTH[provider_name]["status"] = "error"
+                PROVIDER_HEALTH[provider_name]["last_error"] = str(e)
                 last_error = e
                 # Restore history to state before this attempt, retaining the user message
                 self.conversation_history = list(history_backup)

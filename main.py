@@ -86,7 +86,7 @@ from utils import (
     get_store_address,
     format_price_display
 )
-from rag_agent import RAGAgent
+from rag_agent import RAGAgent, PROVIDER_HEALTH
 from db import upsert_user, set_subscription, track_command
 from product_embeddings import VectorStore
 from woocommerce_knowledge_base import setup_knowledge_base
@@ -1545,6 +1545,19 @@ async def admin_logout():
     return response
 
 
+@app.post("/admin/toggle_provider/{provider_name}")
+async def toggle_provider(provider_name: str, request: Request):
+    """Toggle the active state of an AI provider."""
+    session_cookie = request.cookies.get("admin_session")
+    if session_cookie != TELEGRAM_WEBHOOK_SECRET:
+        return RedirectResponse(url="/admin/login", status_code=303)
+        
+    if provider_name in PROVIDER_HEALTH:
+        PROVIDER_HEALTH[provider_name]["active"] = not PROVIDER_HEALTH[provider_name]["active"]
+        
+    return RedirectResponse(url="/admin/dashboard", status_code=303)
+
+
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
     """Enhanced admin dashboard with command tracking and activity analytics."""
@@ -1698,6 +1711,32 @@ async def admin_dashboard(request: Request):
             </code>
         </div>"""
 
+    provider_rows_html = ""
+    for p_name, p_data in PROVIDER_HEALTH.items():
+        status_color = "#27ae60" if p_data["status"] == "ok" else ("#e74c3c" if p_data["status"] == "error" else "#6c757d")
+        status_text = p_data["status"].upper()
+        active_btn_text = "Deactivate" if p_data["active"] else "Activate"
+        active_btn_color = "#e74c3c" if p_data["active"] else "#27ae60"
+        
+        last_error = html.escape(p_data["last_error"])
+        if len(last_error) > 100:
+            last_error = last_error[:100] + "..."
+            
+        provider_rows_html += f'''
+        <tr>
+            <td style="font-weight:bold;text-transform:capitalize">{p_name}</td>
+            <td style="color:{status_color};font-weight:bold">{status_text}</td>
+            <td style="color:#e74c3c;font-size:0.85em;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{html.escape(p_data["last_error"])}">{last_error}</td>
+            <td style="text-align:right">
+                <form method="POST" action="/admin/toggle_provider/{p_name}" style="margin:0">
+                    <button type="submit" style="background:{active_btn_color};color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold">
+                        {active_btn_text}
+                    </button>
+                </form>
+            </td>
+        </tr>
+        '''
+
     return f"""
     <html>
     <head>
@@ -1741,6 +1780,14 @@ async def admin_dashboard(request: Request):
                 <div class="stat-card"><div class="stat-num">{total_commands:,}</div><div class="stat-lbl">🖱️ Commands Run</div></div>
                 <div class="stat-card"><div class="stat-num">{total_products_indexed}</div><div class="stat-lbl">📦 Vector Products</div></div>
                 <div class="stat-card"><div class="stat-num">{total_pages_indexed}</div><div class="stat-lbl">📄 Vector Pages</div></div>
+            </div>
+
+            <div class="card">
+                <h2>🤖 AI Provider Health & Status</h2>
+                <table>
+                    <thead><tr><th>Provider</th><th>Status</th><th>Last Error</th><th style="text-align:right">Action</th></tr></thead>
+                    <tbody>{provider_rows_html}</tbody>
+                </table>
             </div>
 
             <div class="card">
