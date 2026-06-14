@@ -1045,7 +1045,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from db import upsert_user
         upsert_user(user_id, update.effective_user.first_name, phone_number=phone)
         
-        await update.message.reply_text("✅ Phone number saved!", reply_markup=ReplyKeyboardRemove())
+        msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
+        await msg.delete()
         await _fetch_and_show_orders_by_phone(update, context, phone)
 
 async def _render_and_send_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order: dict, order_id=None):
@@ -1097,7 +1098,10 @@ async def _render_and_send_order(update: Update, context: ContextTypes.DEFAULT_T
         await update.effective_message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def _fetch_and_show_orders_by_phone(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str):
-    search_phone = phone_number.replace("+", "")
+    search_phone = phone_number.replace(" ", "").replace("-", "")
+    if search_phone.startswith("+88"): search_phone = search_phone[3:]
+    elif search_phone.startswith("880"): search_phone = search_phone[2:]
+    
     orders = await woo_get("orders", params={"search": search_phone, "per_page": 5})
     
     if not isinstance(orders, list) or len(orders) == 0:
@@ -1163,6 +1167,20 @@ async def view_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
         
     await _render_and_send_order(update, context, order, order_id)
+
+async def save_phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    phone = query.data.replace("save_phone_", "")
+    user_id = update.effective_user.id
+    from db import upsert_user
+    upsert_user(user_id, update.effective_user.first_name, phone_number=phone)
+    await query.edit_message_text(f"✅ Phone number `{phone}` saved! You can now use the **My Order** menu to quickly view your orders.", parse_mode="Markdown")
+
+async def delete_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.delete()
 
 async def my_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Prompt user for a single order lookup or show recent if phone is known."""
@@ -1293,6 +1311,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await _render_and_send_order(update, context, order, order_id)
             
+            # Prompt to save phone if not saved
+            if supabase and not phone_number and billing_phone:
+                keyboard = [
+                    [InlineKeyboardButton("✅ Yes, save my number", callback_data=f"save_phone_{billing_phone}")],
+                    [InlineKeyboardButton("❌ No thanks", callback_data="delete_message")]
+                ]
+                await update.message.reply_text(
+                    f"Would you like to save this order's phone number (`{billing_phone}`) to automatically show your recent orders here in the future?",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
+                )
+
             msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=".", reply_markup=ReplyKeyboardRemove())
             await msg.delete()
 
@@ -1562,6 +1592,8 @@ application.add_handler(CallbackQueryHandler(start_menu, pattern="^start_menu$")
 application.add_handler(CallbackQueryHandler(help_command, pattern="^help_menu$"))
 application.add_handler(CallbackQueryHandler(faq_handler, pattern="^faq_"))
 application.add_handler(CallbackQueryHandler(view_order_handler, pattern="^view_order_"))
+application.add_handler(CallbackQueryHandler(save_phone_handler, pattern="^save_phone_"))
+application.add_handler(CallbackQueryHandler(delete_message_handler, pattern="^delete_message$"))
 application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
 
