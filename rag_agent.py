@@ -188,7 +188,7 @@ def get_providers_chain(primary_provider_name=None):
                     cp_name = row["name"]
                     if cp_name not in PROVIDER_HEALTH:
                         PROVIDER_HEALTH[cp_name] = {"active": True, "status": "unknown", "last_error": ""}
-                    
+
                     if cp_name in providers_info:
                         # Safely override key and model for existing core providers
                         providers_info[cp_name]["api_key_override"] = row.get("api_key", "")
@@ -281,30 +281,178 @@ class RAGAgent:
         self.woo_key = woocommerce_key
         self.woo_secret = woocommerce_secret
         self.user_id = user_id
-        
+
         self.conversation_history = []
         if self.user_id:
             self.conversation_history = get_user_history(self.user_id) or []
-            
+
         self.providers_chain = get_providers_chain()
+
+        # Query-scoped fields for pricing hybrid filters
+        self.current_max_price = None
+        self.current_min_price = None
+        self.current_search_terms = None
+
+    async def _call_llm_simple(self, system_prompt: str, user_prompt: str, history: list = None, require_json: bool = False) -> str:
+        """Helper to make a simple LLM completion call with fallback support, without tools."""
+        last_error = None
+        for provider in self.providers_chain:
+            client_type = provider["client_type"]
+            client = provider["client"]
+            model_name = provider["model_name"]
+            provider_name = provider["name"]
+
+            logger.info("Simple LLM call using provider '%s' (model: %s)...", provider_name, model_name)
+
+            # Clean history for simple completion to avoid API errors
+            simple_history = []
+            if history:
+                for msg in history:
+                    if msg.get("role") in ["user", "assistant"] and isinstance(msg.get("content"), str):
+                        simple_history.append({"role": msg["role"], "content": msg["content"]})
+
+            try:
+                if client_type == "anthropic":
+                    anthropic_messages = list(simple_history)
+                    anthropic_messages.append({"role": "user", "content": user_prompt})
+
+                    response = await client.messages.create(
+                        model=model_name,
+                        max_tokens=1000,
+                        system=system_prompt,
+                        messages=anthropic_messages,
+                        temperature=0.1 if require_json else 0.3
+                    )
+                    content = ""
+                    for block in response.content:
+                        if hasattr(block, "text"):
+                            content += block.text
+                    return content.strip()
+                else:
+                    messages = [{"role": "system", "content": system_prompt}] + simple_history + [{"role": "user", "content": user_prompt}]
+
+                    kwargs = {
+                        "model": model_name,
+                        "messages": messages,
+                        "max_tokens": 1000,
+                        "temperature": 0.1 if require_json else 0.3
+                    }
+                    if require_json and provider_name in ["openai", "groq", "gemini"]:
+                        kwargs["response_format"] = {"type": "json_object"}
+
+                    response = await client.chat.completions.create(**kwargs)
+                    return (response.choices[0].message.content or "").strip()
+            except Exception as e:
+                logger.error("Simple LLM call failed for provider %s: %s", provider_name, str(e))
+                last_error = e
+                continue
+        raise last_error or RuntimeError("All AI providers failed during simple LLM call.")
+
+    async def _analyze_query(self, query: str) -> dict:
+        """
+        Uses the LLM to classify intent and extract search parameters.
+        Returns a dict: { "intent": str, "search_terms": str, "max_price": float|None, "min_price": float|None }
+        """
+        system_prompt = (
+            "You are a strict JSON query analyzer for a clothing and fashion e-commerce store (deencommerce.com).\n"
+            "Analyze the user's message and output a RAW JSON object. DO NOT wrap the JSON in Markdown formatting (no ```json). Just output raw JSON.\n\n"
+            "Format:\n"
+            "{\n"
+            '  "intent": "product_search" | "small_talk" | "support" | "order_status",\n'
+            '  "search_terms": "Cleaned string focusing only on product features/names (e.g. \'blue cotton shirt\'). Leave empty if not product_search",\n'
+            '  "max_price": numeric or null,\n'
+            '  "min_price": numeric or null\n'
+            "}\n\n"
+            "Rules:\n"
+            "- If the user says hello, hi, thank you, or is just chatting, intent = 'small_talk'.\n"
+            "- If the user is asking about order tracking, delivery status, or order lookup, intent = 'order_status'.\n"
+            "- If the user is asking for support, return policy, payment options, how to order, store locations, or contact information, intent = 'support'.\n"
+            "- If the user is searching for, asking to buy, or looking for clothes/items, intent = 'product_search'.\n"
+            "- For product_search, extract a clean product query into search_terms. E.g. 'hi, do you have any red panjabi under 1500?' -> search_terms = 'red panjabi', max_price = 1500.0.\n"
+            "- Extract max_price/min_price ONLY if explicitly mentioned (e.g. 'under 1500' -> max_price: 1500.0, 'above 500' -> min_price: 500.0)."
+        )
+        try:
+            response_text = await self._call_llm_simple(system_prompt, f"User Query: {query}", require_json=True)
+
+            clean_text = response_text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text[7:]
+            if clean_text.startswith("```"):
+                clean_text = clean_text[3:]
+            if clean_text.endswith("```"):
+                clean_text = clean_text[:-3]
+
+            data = json.loads(clean_text.strip())
+
+            return {
+                "intent": data.get("intent", "product_search"),
+                "search_terms": data.get("search_terms", query),
+                "max_price": data.get("max_price"),
+                "min_price": data.get("min_price")
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing query: {e}. Falling back to default product search.")
+            return {
+                "intent": "product_search",
+                "search_terms": query,
+                "max_price": None,
+                "min_price": None
+            }
 
     async def search_products(self, query: str, limit: int = 5):
         """Search products by keyword"""
         processed_query = await preprocess_search_query(query)
         logger.info("RAG search. Original: %s -> Processed: %s", query, processed_query)
+
+        has_filter = (self.current_max_price is not None or self.current_min_price is not None)
+        fetch_limit = 20 if has_filter else limit
+
         products = await woo_get(
             "products",
             params={
                 "search": processed_query,
-                "per_page": limit,
+                "per_page": fetch_limit,
                 "status": "publish",
                 "stock_status": "instock"
             }
         )
         if isinstance(products, dict) and "error" in products:
             return []
-            
-        # Format for LLM
+
+        filtered = []
+        for p in products:
+            try:
+                price = float(p.get("price") or 0)
+            except (ValueError, TypeError):
+                price = 0.0
+
+            if self.current_max_price is not None and price > self.current_max_price:
+                continue
+            if self.current_min_price is not None and price < self.current_min_price:
+                continue
+            filtered.append(p)
+
+        # Fallback if filters eliminated all products
+        if has_filter and not filtered:
+            fallback_matches = products[:limit]
+            formatted_products = []
+            for p in fallback_matches:
+                formatted_products.append({
+                    "id": p["id"],
+                    "name": p["name"],
+                    "price": p["price"],
+                    "regular_price": p.get("regular_price", ""),
+                    "sale_price": p.get("sale_price", ""),
+                    "formatted_price": format_price_display(p),
+                    "description": p.get("description", "")[:200],
+                    "stock": p.get("stock_quantity", "N/A"),
+                    "image": p.get("images", [{}])[0].get("src", ""),
+                    "permalink": p.get("permalink", ""),
+                    "note": f"This product is priced at ৳{p.get('price')} which is outside your budget of ৳{self.current_min_price or 0} - ৳{self.current_max_price or 'any'}, but is the closest alternative."
+                })
+            return formatted_products
+
+        target_list = filtered if has_filter else products
         return [
             {
                 "id": p["id"],
@@ -318,26 +466,71 @@ class RAGAgent:
                 "image": p.get("images", [{}])[0].get("src", ""),
                 "permalink": p.get("permalink", "")
             }
-            for p in products[:limit]
+            for p in target_list[:limit]
         ]
 
     async def semantic_search_products(self, query: str, limit: int = 5):
         """Search products using semantic vector similarity"""
         import main
         vector_store = main.global_vector_store
-        
+
         processed_query = await preprocess_search_query(query)
         if not vector_store or not vector_store.embeddings:
             logger.warning("Vector store not initialized, falling back to keyword search")
             return await self.search_products(processed_query, limit)
-            
+
         logger.info("RAG semantic search. Original: %s -> Processed: %s", query, processed_query)
-        results = await vector_store.search_products(processed_query, top_k=limit)
+
+        has_filter = (self.current_max_price is not None or self.current_min_price is not None)
+        fetch_limit = 20 if has_filter else limit
+
+        results = await vector_store.search_products(processed_query, top_k=fetch_limit)
         products = [res["product"] for res in results]
-            
-        # Format for LLM
-        formatted = []
+
+        filtered = []
         for p in products:
+            try:
+                price = float(p.get("price") or 0)
+            except (ValueError, TypeError):
+                price = 0.0
+
+            if self.current_max_price is not None and price > self.current_max_price:
+                continue
+            if self.current_min_price is not None and price < self.current_min_price:
+                continue
+            filtered.append(p)
+
+        # Fallback if filters eliminated all products
+        if has_filter and not filtered:
+            fallback_matches = products[:limit]
+            formatted_products = []
+            for p in fallback_matches:
+                images = p.get("images", [])
+                image_url = ""
+                if images:
+                    if isinstance(images[0], str):
+                        image_url = images[0]
+                    elif isinstance(images[0], dict):
+                        image_url = images[0].get("src", "")
+
+                formatted_products.append({
+                    "id": p["id"],
+                    "name": p["name"],
+                    "price": p["price"],
+                    "regular_price": p.get("regular_price", ""),
+                    "sale_price": p.get("sale_price", ""),
+                    "formatted_price": format_price_display(p) if "formatted_price" not in p else p.get("formatted_price"),
+                    "description": p.get("short_description", p.get("description", ""))[:200],
+                    "stock": p.get("stock_quantity", "N/A"),
+                    "image": image_url,
+                    "permalink": p.get("permalink", ""),
+                    "note": f"This product is priced at ৳{p.get('price')} which is outside your budget of ৳{self.current_min_price or 0} - ৳{self.current_max_price or 'any'}, but is the closest alternative."
+                })
+            return formatted_products
+
+        target_list = filtered if has_filter else products
+        formatted_products = []
+        for p in target_list[:limit]:
             images = p.get("images", [])
             image_url = ""
             if images:
@@ -345,8 +538,8 @@ class RAGAgent:
                     image_url = images[0]
                 elif isinstance(images[0], dict):
                     image_url = images[0].get("src", "")
-                    
-            formatted.append({
+
+            formatted_products.append({
                 "id": p["id"],
                 "name": p["name"],
                 "price": p["price"],
@@ -358,21 +551,20 @@ class RAGAgent:
                 "image": image_url,
                 "permalink": p.get("permalink", "")
             })
-            
-        return formatted
+        return formatted_products
 
     async def search_store_policies(self, query: str, limit: int = 3):
         """Search store pages and policies using semantic similarity"""
         import main
         vector_store = main.global_vector_store
-        
+
         if not vector_store or not vector_store.embeddings:
             logger.warning("Vector store not initialized, cannot search policies")
             return []
-            
+
         logger.info("RAG semantic search for pages: %s", query)
         results = await vector_store.search_pages(query, top_k=limit)
-        
+
         # Format for LLM
         formatted = []
         for r in results:
@@ -381,7 +573,7 @@ class RAGAgent:
                 "content": r["content"],
                 "link": r["link"]
             })
-            
+
         return formatted
 
     async def get_product_details(self, product_id: int):
@@ -459,6 +651,80 @@ class RAGAgent:
         # block so the AI can immediately reason about it without extra turns.
         _ascii_msg = bn_to_arabic(user_message)
         _ctx = extract_bengali_order_context(_ascii_msg)
+
+        # 1. Analyze query using LLM
+        analysis = await self._analyze_query(user_message)
+        intent = analysis["intent"]
+
+        # Override intent to product_search if order placement intent was detected
+        if _ctx["is_order_intent"]:
+            intent = "product_search"
+
+        self.current_search_terms = analysis["search_terms"] or user_message
+        self.current_max_price = analysis["max_price"]
+        self.current_min_price = analysis["min_price"]
+
+        logger.info(f"Routed intent: {intent}, Search terms: {self.current_search_terms}, Max price: {self.current_max_price}, Min price: {self.current_min_price}")
+
+        # 2. Early routing for non-product queries
+        if intent == "small_talk":
+            system_prompt = (
+                "You are an intelligent, friendly shopping assistant for DEEN Commerce (deencommerce.com).\n"
+                "Respond politely and helpfully to the user's greeting or small talk in the same language they used.\n"
+                "Keep responses extremely concise and to-the-point, using emojis. Ask how you can help them find clothing or products today."
+            )
+            response = await self._call_llm_simple(system_prompt, user_message, self.conversation_history)
+
+            # Save history
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            if self.user_id:
+                update_user_history(self.user_id, self.conversation_history)
+            return response, self.extra_buttons, self.extra_images
+
+        elif intent == "support":
+            self.extra_buttons.append({"text": "📞 Help & FAQ Menu", "callback_data": "help_menu"})
+            system_prompt = (
+                "You are an intelligent, friendly shopping assistant for DEEN Commerce (deencommerce.com).\n"
+                "The user needs customer support or has policy questions. Respond politely in the exact same language they used.\n"
+                "Clearly inform them how they can contact support or view FAQs by clicking the '📞 Help & FAQ Menu' button below or using the /help command."
+            )
+            response = await self._call_llm_simple(system_prompt, user_message, self.conversation_history)
+
+            # Save history
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            if self.user_id:
+                update_user_history(self.user_id, self.conversation_history)
+            return response, self.extra_buttons, self.extra_images
+
+        elif intent == "order_status":
+            self.extra_buttons.append({"text": "📦 My Order", "callback_data": "my_order"})
+
+            # Check if user already provided order tracking details in the message
+            order_id = _ctx.get("order_id")
+            contact_detail = _ctx["emails"][0] if _ctx.get("emails") else (_ctx["phones"][0] if _ctx.get("phones") else None)
+
+            if order_id and contact_detail:
+                logger.info(f"Auto-executing order status check for order {order_id}")
+                response = await self.order_lookup(order_id, contact_detail)
+            else:
+                system_prompt = (
+                    "You are an intelligent, friendly shopping assistant for DEEN Commerce (deencommerce.com).\n"
+                    "The user is asking about order tracking or status. Respond politely in the exact same language they used.\n"
+                    "Inform them that they can check their order status by clicking the '📦 My Order' button below or using the /my_order command.\n"
+                    "Remind them that they will need to provide both their Order ID/number and their billing email or phone number for security."
+                )
+                response = await self._call_llm_simple(system_prompt, user_message, self.conversation_history)
+
+            # Save history
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            if self.user_id:
+                update_user_history(self.user_id, self.conversation_history)
+            return response, self.extra_buttons, self.extra_images
+
+        # 3. Product Search Intent: Use ReAct agent loop
         if _ctx["is_order_intent"] or _ctx["is_status_intent"]:
             ctx_lines = ["[PARSED ORDER CONTEXT]"]
             if _ctx["is_status_intent"]:
@@ -486,10 +752,20 @@ class RAGAgent:
             augmented_message = "\n".join(ctx_lines) + "\n\n" + user_message
         else:
             augmented_message = user_message
+
         # Use the augmented message for AI processing, keep original for history
         internal_message = augmented_message
-            
+
         store_address = await get_store_address()
+
+        # Add consultative "sales closer" style for product searches
+        sales_closer_prompt = (
+            "\n\n[SALES CLOSER STYLE]\n"
+            "You are an expert sales closer. Focus on converting the product search results into a sale. "
+            "Highlight the benefits of the matching items, mention their price clearly, ask if they want to add them to their cart (using 'Add [ID]'), "
+            "and guide them to complete the order on the website or via checkout."
+        )
+
         dynamic_system_prompt = (
             SYSTEM_PROMPT +
             f"\n\n[STORE ADDRESS]\nThe physical outlet addresses for DEEN Commerce are:\n{store_address}\n\n"
@@ -497,6 +773,7 @@ class RAGAgent:
             f"- If a customer asks for a specific outlet's address (e.g., Mirpur, Wari, Cumilla, or Sylhet), provide ONLY that specific outlet's details (address, phone, hours, and map link), NOT all of them.\n"
             f"- If a customer asks for outlets in Dhaka, provide ONLY the Mirpur and Wari outlets' details.\n"
             f"- If they ask generally about your store locations, outlets, or where they can visit, list all 4 outlets."
+            + sales_closer_prompt
         )
 
         messages = self.conversation_history + [{"role": "user", "content": internal_message}]
@@ -547,7 +824,7 @@ class RAGAgent:
                 PROVIDER_HEALTH[provider_name]["last_error"] = ""
                 if self.user_id:
                     update_user_history(self.user_id, self.conversation_history)
-                
+
                 # Parse out [Image: URL] tags
                 clean_lines = []
                 import re
@@ -561,7 +838,7 @@ class RAGAgent:
                             clean_lines.append(line)
                     else:
                         clean_lines.append(line)
-                
+
                 response = "\n".join(clean_lines).strip()
                 return response, self.extra_buttons, self.extra_images
             except Exception as e:

@@ -90,3 +90,22 @@ def track_command(user_id: int, action: str):
         }).eq("id", user_id).execute()
     except Exception as e:
         logger.error(f"Failed to track action '{action}' for user {user_id}: {e}")
+
+
+def match_products(query_embedding: list, threshold: float = 0.2, limit: int = 20):
+    """Fallback search function to match products from Supabase using vector similarity."""
+    if not supabase:
+        return []
+    try:
+        response = supabase.rpc(
+            "match_products",
+            {
+                "query_embedding": query_embedding,
+                "match_threshold": threshold,
+                "match_count": limit
+            }
+        ).execute()
+        return response.data or []
+    except Exception as e:
+        logger.error(f"Failed to match products via RPC: {e}")
+        return []
