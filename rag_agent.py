@@ -475,7 +475,7 @@ class RAGAgent:
         vector_store = main.global_vector_store
 
         processed_query = await preprocess_search_query(query)
-        if not vector_store or not vector_store.embeddings:
+        if not vector_store or not vector_store.has_connection:
             logger.warning("Vector store not initialized, falling back to keyword search")
             return await self.search_products(processed_query, limit)
 
@@ -558,7 +558,7 @@ class RAGAgent:
         import main
         vector_store = main.global_vector_store
 
-        if not vector_store or not vector_store.embeddings:
+        if not vector_store or not vector_store.has_connection:
             logger.warning("Vector store not initialized, cannot search policies")
             return []
 

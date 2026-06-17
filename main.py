@@ -109,6 +109,38 @@ async def scheduler_task():
         schedule.run_pending()
         await asyncio.sleep(60)
 
+async def check_embeddings_exist() -> bool:
+    from db import supabase
+    if not supabase:
+        return False
+    try:
+        res = supabase.table("product_embeddings").select("id", count="exact").limit(1).execute()
+        count = res.count if hasattr(res, "count") else (len(res.data) if res.data else 0)
+        return count > 0
+    except Exception as e:
+        logger.error("Failed to check existing embeddings in Supabase: %s", str(e))
+        return False
+
+async def run_initial_indexing():
+    """Initial run: Fetching WooCommerce data and generating new embeddings for Supabase in background."""
+    logger.info("Background indexing task started.")
+    try:
+        # Check if embeddings already exist in Supabase
+        exists = await check_embeddings_exist()
+        if exists:
+            logger.info("Embeddings already exist in Supabase. Skipping initial WooCommerce fetch/indexing on startup.")
+            with open("woo_knowledge_base.json", "w", encoding="utf-8") as f:
+                json.dump({"status": "embeddings_exist_in_supabase"}, f)
+            return
+
+        logger.info("No embeddings found in Supabase. Starting WooCommerce setup and embedding generation...")
+        await setup_knowledge_base(WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET, "woo_knowledge_base.json")
+        if global_vector_store:
+            await asyncio.to_thread(global_vector_store.create_from_knowledge_base, "woo_knowledge_base.json")
+        logger.info("Background indexing task completed successfully.")
+    except Exception as e:
+        logger.error("Background initial indexing failed: %s", str(e))
+
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):
     """Lifecycle events for FastAPI application."""
@@ -136,11 +168,10 @@ async def lifespan(fastapi_app: FastAPI):
         global_vector_store = VectorStore()
         try:
             if not os.path.exists("woo_knowledge_base.json"):
-                logger.info("Initial run: Fetching WooCommerce data and generating new embeddings for Supabase...")
-                await setup_knowledge_base(WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET, "woo_knowledge_base.json")
-                await asyncio.to_thread(global_vector_store.create_from_knowledge_base, "woo_knowledge_base.json")
+                # Run the indexing process in the background to prevent lifespan startup block
+                asyncio.create_task(run_initial_indexing())
             else:
-                logger.info("VectorStore initialized with Supabase integration.")
+                logger.info("VectorStore initialized (local knowledge base file exists).")
         except Exception as e:
             logger.error("Failed to initialize VectorStore: %s", str(e))
             
@@ -853,6 +884,9 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_category and category_slug:
             category_url = f"{WOOCOMMERCE_URL}/product-category/{category_slug}/"
             keyboard.append([InlineKeyboardButton("🌐 View Category on Website", url=category_url)])
+        else:
+            shop_url = f"{WOOCOMMERCE_URL}/"
+            keyboard.append([InlineKeyboardButton("🌐 View Shop on Website", url=shop_url)])
 
         keyboard.append([InlineKeyboardButton("← Back", callback_data=back_callback)])
         reply_markup = InlineKeyboardMarkup(keyboard)
